@@ -204,6 +204,11 @@ class Momentum(Strategy):
     top: int = 3
     absolute: bool = True  # only hold symbols whose own return is positive
     every: int = 0  # 0 = rebalance monthly; N = every N trading days (backtester only, see engine.py)
+    skip: int = 0  # ignore the most recent N trading days when measuring the return (backtester only)
+    # Volatility scaling (backtester only): invest less when the picks have recently been much more
+    # volatile than usual. vol_short = days of "recent" volatility (0 = off), vol_long = days of "normal".
+    vol_short: int = 0
+    vol_long: int = 252
 
     name = "momentum"
     resize = True
@@ -213,6 +218,10 @@ class Momentum(Strategy):
             raise ValueError("lookback must be at least 2 and top at least 1")
         if self.every < 0:
             raise ValueError("every must be 0 (monthly) or a number of trading days")
+        if self.skip < 0 or self.skip >= self.lookback - 1:
+            raise ValueError("skip must be 0 or a number of trading days well inside the lookback")
+        if self.vol_short < 0 or (self.vol_short and not 2 <= self.vol_short < self.vol_long):
+            raise ValueError("vol_short must be 0 (off) or at least 2 days and shorter than vol_long")
 
     @property
     def rebalance(self) -> str:  # type: ignore[override]
@@ -222,22 +231,56 @@ class Momentum(Strategy):
         # "every" is left out when monthly, so existing runs and the live trader's
         # rebalance bookkeeping (keyed on these params) are unchanged
         out = asdict(self)
-        if not self.every:
-            out.pop("every")
+        for key in ("every", "skip", "vol_short"):  # left out at their defaults (see above)
+            if not out[key]:
+                out.pop(key)
+        if not self.vol_short:
+            out.pop("vol_long")
         return out
 
     @property
     def required_bars(self) -> int:
         return self.lookback + 1
 
+    @property
+    def warmup_bars(self) -> int:
+        return max(self.required_bars, self.vol_long + 1 if self.vol_short else 0)
+
+    def _exposure(self, picks: Dict[str, np.ndarray]) -> Tuple[float, str]:
+        """Share of the target to invest (0-1) and a note, from the picks' recent vs normal volatility.
+
+        Volatility is the standard deviation of the equal-weight basket's daily returns.
+        Exposure = normal / recent, capped at 1: twice as volatile as usual -> half invested.
+        With less than vol_long days of history it uses what there is (at least 2 x vol_short).
+        """
+        if not self.vol_short or not picks:
+            return 1.0, ""
+        n = min(min(arr.size for arr in picks.values()) - 1, self.vol_long)
+        if n < 2 * self.vol_short:
+            return 1.0, "; volatility scaling: not enough history yet, fully invested"
+        window = np.vstack([arr[-n - 1:] for arr in picks.values()])
+        if not np.all(np.isfinite(window)) or np.any(window <= 0):
+            return 1.0, "; volatility scaling: gaps in the prices, fully invested"
+        basket = (window[:, 1:] / window[:, :-1] - 1).mean(axis=0)
+        recent, normal = float(basket[-self.vol_short:].std()), float(basket.std())
+        if recent <= 0:
+            return 1.0, "; volatility scaling: fully invested"
+        exposure = min(1.0, normal / recent)
+        return exposure, (f"; volatility scaling: recent {recent * np.sqrt(252) * 100:.0f}%/yr vs normal "
+                          f"{normal * np.sqrt(252) * 100:.0f}%/yr, so {exposure * 100:.0f}% invested")
+
     def _period(self) -> str:
         months = round(self.lookback / 21)
-        return f"{months}-month"
+        if not self.skip:
+            return f"{months}-month"
+        return f"{months}-month (skipping the last {self.skip} days)"
 
     def describe(self) -> str:
         rule = ", only if that return is positive" if self.absolute else ""
         when = f"every {self.every} trading days" if self.every else "each month"
-        return f"{when}, hold the {self.top} symbols with the best {self._period()} return{rule}"
+        scaling = (f"; invest less when their last {self.vol_short} days were more volatile than their last "
+                   f"{self.vol_long}" if self.vol_short else "")
+        return f"{when}, hold the {self.top} symbols with the best {self._period()} return{rule}{scaling}"
 
     def decide(self, history: History, slots: Optional[int] = None, extra: Optional[History] = None,
                mode: Optional[str] = None) -> Dict[str, Signal]:
@@ -245,13 +288,20 @@ class Momentum(Strategy):
         out: Dict[str, Signal] = {}
         for symbol, closes in history.items():
             arr = np.asarray(closes, dtype=float)
-            if arr.size < self.required_bars or not (np.isfinite(arr[-1]) and np.isfinite(arr[-1 - self.lookback])):
+            if arr.size < self.required_bars:
                 out[symbol] = Signal(None, f"need {self.required_bars} days of prices")
                 continue
-            returns[symbol] = float(arr[-1] / arr[-1 - self.lookback] - 1)
+            # return from `lookback` days ago up to `skip` days ago (skip 0 = up to the latest price)
+            end, begin = arr[-1 - self.skip], arr[-1 - self.lookback]
+            if not (np.isfinite(arr[-1]) and np.isfinite(end) and np.isfinite(begin)):
+                out[symbol] = Signal(None, f"need {self.required_bars} days of prices")
+                continue
+            returns[symbol] = float(end / begin - 1)
 
         ranked = sorted(returns, key=returns.get, reverse=True)
-        weight = 1.0 / self.top
+        picks = [s for s in ranked[: self.top] if not (self.absolute and returns[s] <= 0)]
+        exposure, note = self._exposure({s: np.asarray(history[s], dtype=float) for s in picks})
+        weight = exposure / self.top
         period = self._period()
         for rank, symbol in enumerate(ranked, start=1):
             ret = returns[symbol]
@@ -261,7 +311,7 @@ class Momentum(Strategy):
             elif self.absolute and ret <= 0:
                 out[symbol] = Signal(0.0, f"{where}; return not positive, so cash instead")
             else:
-                out[symbol] = Signal(weight, f"{where}; in the top {self.top}")
+                out[symbol] = Signal(weight, f"{where}; in the top {self.top}{note}")
         return out
 
 
@@ -413,7 +463,8 @@ def make_strategy(settings, name: Optional[str] = None, **overrides) -> Strategy
         "ma_crossover": {"fast": settings.fast_window, "slow": settings.slow_window},
         "trend": {"window": getattr(settings, "trend_window", 200)},
         "momentum": {"lookback": getattr(settings, "momentum_lookback", 252),
-                     "top": getattr(settings, "momentum_top", 3)},
+                     "top": getattr(settings, "momentum_top", 3),
+                     "vol_short": getattr(settings, "momentum_vol_scale", 0)},
         "defensive": {"assets": tuple(getattr(settings, "crash_assets", ("BIL", "IEF", "TLT", "GLD"))),
                       "cash_only": getattr(settings, "crash_mode", "defensive") == "cash"},
     }[name]

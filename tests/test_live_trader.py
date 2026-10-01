@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from live_trader.broker import Account, DuplicateOrderError, PositionInfo
@@ -206,3 +207,73 @@ def test_sells_fractional_positions(engine):
     broker = FakeBroker(positions={"DOWN": 12.3456})
     run_tick(settings(), broker, FakeData(), engine, now=NOW)
     assert ("DOWN", 12.3456, "sell") in [o[:3] for o in broker.orders]
+
+
+# --- volatility-scaled momentum in the live bot ----------------------------
+
+class VolData:
+    """Two rising stocks with 300 days of history ending the business day before NOW.
+
+    Their daily wiggle is 1% until the last 21 days, then `recent` (e.g. 0.04 = four times as wild).
+    Records the earliest date the bot asked for, to check it fetches a year of history.
+    """
+
+    def __init__(self, recent=0.01):
+        vols = np.concatenate([np.full(279, 0.01), np.full(21, recent)])
+        signs = np.where(np.arange(300) % 2 == 0, 1.0, -1.0)
+        idx_start = pd.bdate_range(end="2024-05-31", periods=300)[0].date().isoformat()
+        self.bars = {
+            "UP": make_bars(100 * np.cumprod(1 + 0.003 + signs * vols), start=idx_start),
+            "UP2": make_bars(100 * np.cumprod(1 + 0.002 + signs * vols * 1.1), start=idx_start),
+        }
+        self.asked_from = None
+
+    def daily_bars(self, symbols, start, end=None):
+        self.asked_from = start
+        return {s: self.bars[s] for s in symbols if s in self.bars}
+
+    def latest_prices(self, symbols):
+        return {s: float(self.bars[s]["close"].iloc[-1]) for s in symbols if s in self.bars}
+
+
+def vol_settings(**extra):
+    env = {"SYMBOLS": "UP,UP2", "STRATEGY": "momentum", "MOMENTUM_LOOKBACK": "126", "MOMENTUM_TOP": "2",
+           "MOMENTUM_VOL_SCALE": "21"}
+    env.update(extra)
+    return Settings.from_env(env)
+
+
+def test_vol_scaling_fetches_a_year_of_history(engine):
+    data = VolData()
+    run_tick(vol_settings(DRY_RUN="true"), FakeBroker(), data, engine, now=NOW)
+    assert (NOW.date() - data.asked_from).days >= 365  # enough for the 1-year "normal" volatility
+    off = VolData()
+    run_tick(vol_settings(DRY_RUN="true", MOMENTUM_VOL_SCALE="0"), FakeBroker(), off, engine, now=NOW)
+    assert (NOW.date() - off.asked_from).days < (NOW.date() - data.asked_from).days
+
+
+def test_vol_scaling_invests_less_after_a_volatility_spike(engine):
+    calm = run_tick(vol_settings(DRY_RUN="true"), FakeBroker(), VolData(0.01), engine, now=NOW)
+    wild = run_tick(vol_settings(DRY_RUN="true"), FakeBroker(), VolData(0.04), engine, now=NOW)
+
+    def spent(result):
+        return sum(d["order_qty"] * d["price"] for d in result["decisions"] if d["action"] == "buy")
+
+    assert spent(calm) == pytest.approx(100_000, rel=0.05)
+    assert 10_000 < spent(wild) < 60_000  # most of the account stays in cash
+    assert all("% invested" in d["reason"] for d in wild["decisions"] if d["action"] == "buy")
+
+
+def test_turning_vol_scaling_on_rebalances_once_then_waits_for_next_month(engine):
+    from live_trader.trader import rebalance_key
+    from trader_core.strategy import make_strategy
+
+    off, on = vol_settings(MOMENTUM_VOL_SCALE="0"), vol_settings()
+    assert rebalance_key(make_strategy(off)) != rebalance_key(make_strategy(on))
+    broker = FakeBroker()
+    assert run_tick(off, broker, VolData(0.04), engine, now=NOW)["rebalanced"]
+    assert not run_tick(off, broker, VolData(0.04), engine, now=NOW.replace(hour=15))["rebalanced"]
+    # switching the setting on counts as a new strategy: one immediate rebalance...
+    assert run_tick(on, broker, VolData(0.04), engine, now=NOW.replace(hour=16))["rebalanced"]
+    # ...and then it waits for next month like before
+    assert not run_tick(on, broker, VolData(0.04), engine, now=NOW.replace(hour=17))["rebalanced"]

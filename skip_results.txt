@@ -1,0 +1,35 @@
+  Momentum sweep on sectors (11 symbols), 1999-06-24 to 2026-10-01
+  Signals: live price · cash earns 0.0% · halves split at 2013-01-30
+  Buy & hold: +7.6%/yr overall, +4.8% first half, +12.1% second half (per year)
+
+  Rebalance  Lookback      Skip  Top  Per year  1st half  2nd half  Worst drop  Sharpe  Trades  Beats B&H in both halves
+  monthly        6 mo      none    5     +6.8%     +5.5%     +8.2%      -33.2%    0.53     332                        no
+  monthly        6 mo  last 21d    5     +8.0%     +7.5%     +8.4%      -35.3%    0.59     346                        no
+  monthly       12 mo      none    5     +8.3%     +5.3%    +11.3%      -31.9%    0.61     226                        no
+  monthly       12 mo  last 21d    5     +8.6%     +5.3%    +11.9%      -32.5%    0.62     233                        no
+
+  No setting beat buy & hold in both halves on this list.
+  Momentum sweep on tech2020 (25 symbols), 2007-01-03 to 2026-10-01
+  Signals: live price · cash earns 0.0% · halves split at 2016-11-15
+  Buy & hold: +24.3%/yr overall, +18.2% first half, +34.6% second half (per year)
+
+  Rebalance  Lookback      Skip  Top  Per year  1st half  2nd half  Worst drop  Sharpe  Trades  Beats B&H in both halves
+  monthly        6 mo      none    5    +40.1%    +33.1%    +47.1%      -48.5%    1.20     343                       YES
+  monthly        6 mo  last 21d    5    +36.6%    +28.0%    +45.4%      -50.8%    1.12     397                       YES
+  monthly       12 mo      none    5    +35.6%    +28.1%    +43.3%      -50.5%    1.09     242                       YES
+  monthly       12 mo  last 21d    5    +32.9%    +23.2%    +42.6%      -55.7%    1.03     263                       YES
+
+  4 of 4 settings beat buy & hold in both halves (buy & hold Sharpe 0.95).
+  Prefer a setting whose neighbours also pass: an isolated winner is more likely luck.
+  Momentum sweep on custom list (53 symbols), 2016-01-04 to 2026-10-01
+  Signals: live price · cash earns 0.0% · halves split at 2021-05-17
+  Buy & hold: +32.0%/yr overall, +26.6% first half, +33.1% second half (per year)
+
+  Rebalance  Lookback      Skip  Top  Per year  1st half  2nd half  Worst drop  Sharpe  Trades  Beats B&H in both halves
+  monthly        6 mo      none    5    +62.5%    +54.6%    +68.6%      -42.8%    1.31     222                       YES
+  monthly        6 mo  last 21d    5    +61.8%    +46.3%    +78.4%      -40.9%    1.29     256                       YES
+  monthly       12 mo      none    5    +42.4%    +43.5%    +40.5%      -56.0%    1.05     173                       YES
+  monthly       12 mo  last 21d    5    +42.3%    +39.4%    +45.2%      -47.6%    1.04     175                       YES
+
+  4 of 4 settings beat buy & hold in both halves (buy & hold Sharpe 1.11).
+  Prefer a setting whose neighbours also pass: an isolated winner is more likely luck.

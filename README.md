@@ -195,6 +195,37 @@ Faster rebalancing reacts sooner but trades much more; the per-trade cost (`--sl
 default 5) is charged on every trade, so the comparison includes that. This is a
 backtester-only setting for now: the live trader still rebalances monthly.
 
+**Skip-month momentum.** Stocks that spiked in the last few weeks often give some of it
+back. `--skip N` measures each stock's return up to N trading days ago instead of up to
+today (`--skip 21` ignores the most recent month), the way the classic research version
+of momentum works. In a sweep it takes a list, e.g. `--skip 0,21`:
+
+```bash
+python -m backtester --strategy momentum --sweep --universe sectors --provider yfinance \
+  --start 1999-06-01 --lookbacks 126,252 --tops 5 --skip 0,21
+```
+
+Also backtester-only for now.
+
+**Volatility scaling.** Momentum's worst crashes tend to come in stretches of extreme
+volatility. `--vol-scale N` compares how volatile the picks were over their last N trading
+days with their last year, and invests less when recent volatility is higher: twice as
+volatile as usual means half invested, the rest in cash. It never invests more than 100%.
+Based on Barroso & Santa-Clara (2015) and Moreira & Muir (2017); `21` is the research
+version. In a sweep, e.g. `--vol-scale 0,21,63` (0 = off):
+
+```bash
+python -m backtester --strategy momentum --sweep --universe sectors --provider yfinance \
+  --start 1999-06-01 --lookbacks 126 --tops 5 --vol-scale 0,21,63
+```
+
+Unlike the options above, this one is also a live setting: `MOMENTUM_VOL_SCALE=21` in `.env`
+turns it on for the live trader (0 = off). In backtests from 1999 (sector funds), 2007
+(tech2020) and 2016 (the watchlist) it cut the worst drop on every list, by up to 9 points,
+at about the same return. It's checked at each monthly rebalance, so a crash that
+starts mid-month isn't caught until the next one. Turning it on (or changing it) counts
+as a new strategy setting, so the next run rebalances right away.
+
 ### Adding a strategy
 
 Everything else (backtester, live trader, dashboard) works with any strategy, so a new one

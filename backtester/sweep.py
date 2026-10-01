@@ -16,6 +16,12 @@ trading days), e.g. to see whether reacting faster pays for its extra trades:
     python -m backtester --strategy momentum --sweep --universe sectors --provider yfinance \
         --start 1999-06-01 --lookbacks 21,63,126 --tops 5 --every 2,5,10,0
 
+--skip compares "skip-month" variants: the return is measured up to N trading days
+ago instead of up to today (21 = skip the most recent month), e.g. --skip 0,21.
+
+--vol-scale compares volatility scaling: invest less when the picks' last N trading days
+were more volatile than their last year (0 = off), e.g. --vol-scale 0,21,63.
+
 Pick the grid before looking at the results, and keep it small.
 """
 from __future__ import annotations
@@ -44,6 +50,14 @@ DEFAULT_EVERY = (0,)  # 0 = monthly (the strategy's normal schedule)
 
 def every_label(every: int) -> str:
     return "monthly" if not every else f"every {every}d"
+
+
+def skip_label(skip: int) -> str:
+    return "none" if not skip else f"last {skip}d"
+
+
+def vol_label(vol: int) -> str:
+    return "off" if not vol else f"{vol}d vs 1y"
 
 
 def _cagr(total_return: float, start, end) -> Optional[float]:
@@ -81,6 +95,8 @@ def sweep(
     slippage_bps: float = 5.0,
     normal_only: bool = False,
     everys: Sequence[int] = DEFAULT_EVERY,
+    skips: Sequence[int] = (0,),
+    vols: Sequence[int] = (0,),
 ) -> Dict:
     """Run the grid. With ``normal_only``, every return is measured on normal-market
     days only, as judged by the crash detector (CRASH_INDEX etc.), so crashes don't
@@ -98,7 +114,8 @@ def sweep(
     extras = [detector.index] if normal_only and detector.index not in symbols else []
 
     # One download for the whole grid, with enough warmup for the longest lookback.
-    warmup_bars = max(max(lookbacks) + 1, detector.required_bars if normal_only else 0)
+    warmup_bars = max(max(lookbacks) + 1, detector.required_bars if normal_only else 0,
+                      253 if any(vols) else 0)  # vol scaling compares with the last year
     warmup = math.ceil(warmup_bars * 1.6) + 10
     fetched = make_provider(settings, provider_name).daily_bars(symbols + extras, start_d - timedelta(days=warmup), end_d)
     prices = {s: df for s, df in fetched.items() if s in symbols and not df.empty}
@@ -121,9 +138,11 @@ def sweep(
                   signal_mode=signal_mode, cash_rate=cash_rate)
 
     rows = []
-    grid = [(lookback, top, every) for every in everys for lookback in lookbacks for top in tops]
-    for lookback, top, every in grid:
-        strat = make_strategy(settings, "momentum", lookback=lookback, top=top, every=every, crash_switch=False)
+    grid = [(lookback, top, every, skip, vol)
+            for every in everys for lookback in lookbacks for skip in skips for vol in vols for top in tops]
+    for lookback, top, every, skip, vol in grid:
+        strat = make_strategy(settings, "momentum", lookback=lookback, top=top, every=every, skip=skip,
+                              vol_short=vol, crash_switch=False)
         full = run_backtest(prices, strat, settings.initial_capital, start=start_d, **common)
         eq, bh = full.equity["equity"], full.equity["benchmark_equity"]
         if normal_only:
@@ -149,6 +168,8 @@ def sweep(
             "lookback": lookback,
             "top": top,
             "every": every,
+            "skip": skip,
+            "vol_scale": vol,
             "cagr": cagr,
             "benchmark_cagr": bench,
             "first_half": parts[0][0],
@@ -200,12 +221,13 @@ def print_sweep(s: Dict) -> None:
     print(f"  Buy & hold: {_pct(r0['benchmark_cagr'])}/yr overall, {_pct(r0['first_half_benchmark'])} first half, "
           f"{_pct(r0['second_half_benchmark'])} second half (per year)")
     print()
-    header = ("Rebalance", "Lookback", "Top", "Per year", "1st half", "2nd half", "Worst drop", "Sharpe", "Trades",
-              "Beats B&H in both halves")
+    header = ("Rebalance", "Lookback", "Skip", "Vol scale", "Top", "Per year", "1st half", "2nd half",
+              "Worst drop", "Sharpe", "Trades", "Beats B&H in both halves")
     table = [header]
     for r in rows:
         table.append((
-            every_label(r.get("every", 0)), f"{round(r['lookback'] / 21)} mo", str(r["top"]), _pct(r["cagr"]),
+            every_label(r.get("every", 0)), f"{round(r['lookback'] / 21)} mo", skip_label(r.get("skip", 0)),
+            vol_label(r.get("vol_scale", 0)), str(r["top"]), _pct(r["cagr"]),
             _pct(r["first_half"]),
             _pct(r["second_half"]), _pct(r["max_drawdown"]),
             "n/a" if r["sharpe"] is None else f"{r['sharpe']:.2f}", str(r["trades"]),

@@ -40,6 +40,19 @@ def _universe_label(value: Optional[str]) -> str:
     return describe((value or DEFAULT_SYMBOLS).split(","))
 
 
+def _vol_scale(value: Optional[str]) -> int:
+    """MOMENTUM_VOL_SCALE: 0 (off) or 2-251 trading days; anything else is a configuration error."""
+    if value is None or value.strip() == "":
+        return 0
+    try:
+        days = int(value)
+    except ValueError:
+        raise ValueError(f"MOMENTUM_VOL_SCALE must be a whole number of trading days, not {value!r}") from None
+    if days != 0 and not 2 <= days <= 251:
+        raise ValueError(f"MOMENTUM_VOL_SCALE must be 0 (off) or between 2 and 251, not {days}")
+    return days
+
+
 def read_dotenv(path: str = ".env") -> Dict[str, str]:
     """Minimal .env reader (KEY=VALUE lines, # comments) for running outside Docker."""
     values: Dict[str, str] = {}
@@ -78,6 +91,9 @@ class Settings:
     trend_window: int = 200  # trend
     momentum_lookback: int = 252  # momentum, in trading days (~12 months)
     momentum_top: int = 3  # momentum: how many symbols to hold
+    # momentum: invest less when the picks' last N trading days were more volatile than their last year
+    # (0 = off; 21 = the version that passed the backtests, see README "Volatility scaling")
+    momentum_vol_scale: int = 0
     # Crash mode (trader_core/regime.py): switch to a backup strategy while the market is crash-like
     crash_switch: bool = False
     crash_index: str = "QQQ"  # index the detector watches
@@ -118,6 +134,7 @@ class Settings:
             trend_window=int(env.get("TREND_WINDOW") or cls.trend_window),
             momentum_lookback=int(env.get("MOMENTUM_LOOKBACK") or cls.momentum_lookback),
             momentum_top=int(env.get("MOMENTUM_TOP") or cls.momentum_top),
+            momentum_vol_scale=_vol_scale(env.get("MOMENTUM_VOL_SCALE")),
             crash_switch=_bool(env.get("CRASH_SWITCH")),
             crash_index=(env.get("CRASH_INDEX") or cls.crash_index).strip().upper(),
             crash_drawdown=float(env.get("CRASH_DRAWDOWN") or 10) / 100,  # written as a percent

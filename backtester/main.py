@@ -159,13 +159,21 @@ def run(
     crash_switch: Optional[bool] = None,
     crash_confirm: Optional[int] = None,
     every: Optional[int] = None,
+    skip: Optional[int] = None,
+    vol_scale: Optional[int] = None,
 ) -> Dict:
     universe = describe(symbols) if symbols else settings.universe
     symbols = expand(symbols) if symbols else settings.symbols
     strategy = make_strategy(settings, strategy, fast=fast, slow=slow, window=window, lookback=lookback, top=top,
-                             crash_switch=crash_switch, crash_confirm=crash_confirm, every=every)
+                             crash_switch=crash_switch, crash_confirm=crash_confirm, every=every, skip=skip,
+                             vol_short=vol_scale)
     if every and strategy.rebalance != "every":
         raise ValueError(f"--every only applies to momentum, not {strategy.name}")
+    if skip and not getattr(strategy, "skip", 0) and not getattr(getattr(strategy, "normal", None), "skip", 0):
+        raise ValueError(f"--skip only applies to momentum, not {strategy.name}")
+    inner = getattr(strategy, "normal", strategy)
+    if vol_scale and not getattr(inner, "vol_short", 0):
+        raise ValueError(f"--vol-scale only applies to momentum, not {strategy.name}")
     signal_mode = (signal_mode or settings.signal_mode).lower()
     cash_rate = settings.cash_rate if cash_rate is None else cash_rate
     provider_name = (provider or settings.data_provider).lower()
@@ -310,6 +318,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--every", metavar="DAYS",
                         help="momentum: rebalance every DAYS trading days instead of monthly (0 = monthly). "
                              "In a sweep, a comma-separated list to compare, e.g. 2,5,10,0")
+    parser.add_argument("--skip", metavar="DAYS",
+                        help="momentum: measure the return up to DAYS trading days ago, ignoring the most recent "
+                             "ones (21 = skip the last month; 0 = none). In a sweep, a list such as 0,21")
+    parser.add_argument("--vol-scale", metavar="DAYS",
+                        help="momentum: invest less when the picks' last DAYS trading days were more volatile than "
+                             "their last year (0 = off; 21 = the research version). In a sweep, a list such as 0,21,63")
     parser.add_argument("--lookbacks", metavar="DAYS",
                         help="sweep: comma-separated lookbacks in trading days (default 63,126,252)")
     parser.add_argument("--tops", metavar="N",
@@ -340,6 +354,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser.error("--crash-confirm must be at least 1")
     try:
         everys = _int_list(args.every)
+        skips = _int_list(args.skip)
+        vols = _int_list(args.vol_scale)
         lookbacks = _int_list(args.lookbacks)
         tops = _int_list(args.tops)
     except ValueError as exc:
@@ -352,8 +368,27 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser.error("--lookbacks and --tops are for --sweep; use --lookback and --top for a single backtest")
     if not args.sweep and everys and len(everys) > 1:
         parser.error("--every takes a single value outside --sweep")
-    if args.crash_report and everys:
-        parser.error("--every isn't supported with --crash-report yet")
+    if skips and any(x < 0 for x in skips):
+        parser.error("--skip must be 0 or a positive number of trading days")
+    if not args.sweep and skips and len(skips) > 1:
+        parser.error("--skip takes a single value outside --sweep")
+    if vols and any(v < 0 or v == 1 or v >= 252 for v in vols):
+        parser.error("--vol-scale must be 0 (off) or between 2 and 251 trading days")
+    if not args.sweep and vols and len(vols) > 1:
+        parser.error("--vol-scale takes a single value outside --sweep")
+    if vols and any(vols) and (args.strategy or Settings.from_env().strategy) != "momentum":
+        parser.error("--vol-scale only applies to --strategy momentum")
+    if args.crash_report and (everys or skips or vols):
+        parser.error("--every, --skip and --vol-scale aren't supported with --crash-report yet")
+    if skips and any(skips) and (args.strategy or Settings.from_env().strategy) != "momentum":
+        parser.error("--skip only applies to --strategy momentum")
+    if skips and any(skips):
+        from .sweep import DEFAULT_LOOKBACKS
+
+        shortest = min(lookbacks or ([args.lookback] if args.lookback else
+                                     (DEFAULT_LOOKBACKS if args.sweep else [Settings.from_env().momentum_lookback])))
+        if max(skips) >= shortest - 1:
+            parser.error(f"--skip must be well inside the lookback ({shortest} days here)")
     if everys and any(everys) and (args.strategy or Settings.from_env().strategy) != "momentum":
         parser.error("--every only applies to --strategy momentum")
 
@@ -383,6 +418,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                        split=args.split, provider=args.provider, signal_mode=args.signal_mode,
                        normal_only=args.normal_only,
                        everys=everys or (0,),
+                       skips=skips or (0,),
+                       vols=vols or (0,),
                        **({"lookbacks": lookbacks} if lookbacks else {}),
                        **({"tops": tops} if tops else {}),
                        cash_rate=None if args.cash_rate is None else args.cash_rate / 100,
@@ -413,6 +450,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         crash_switch=_on_off(args.crash_switch),
         crash_confirm=args.crash_confirm,
         every=everys[0] if everys else None,
+        skip=skips[0] if skips else None,
+        vol_scale=vols[0] if vols else None,
     )
     if args.json:
         print(json.dumps(summary, indent=2, default=str))

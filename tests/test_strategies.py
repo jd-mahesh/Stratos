@@ -267,3 +267,162 @@ def test_cli_rejects_bad_rebalance_flags(argv):
 
     with pytest.raises(SystemExit):
         main(argv)
+
+
+# --- skip-month momentum (backtester only) -----------------------------------
+
+def test_skip_measures_the_return_up_to_n_days_ago():
+    # A rose steadily, then spiked in the last 5 days; B rose faster before that and dipped recently
+    a = np.concatenate([np.linspace(100, 110, 60), np.linspace(110, 150, 5)])
+    b = np.concatenate([np.linspace(100, 130, 60), np.linspace(130, 125, 5)])
+    plain = Momentum(lookback=60, top=1).decide({"A": a, "B": b})
+    skipped = Momentum(lookback=60, top=1, skip=5).decide({"A": a, "B": b})
+    assert plain["A"].weight == 1.0 and plain["B"].weight == 0.0  # the spike wins without skipping
+    assert skipped["B"].weight == 1.0 and skipped["A"].weight == 0.0  # ignoring the last 5 days, B led
+    assert "skipping the last 5 days" in skipped["B"].reason
+
+
+def test_skip_uses_the_same_window_for_the_positive_return_filter():
+    # up over the lookback overall, but down over the window that ends 10 days ago
+    closes = np.concatenate([np.linspace(100, 90, 50), np.linspace(90, 120, 10)])
+    sig = Momentum(lookback=55, top=1, skip=10).decide({"X": closes})
+    assert sig["X"].weight == 0.0 and "not positive" in sig["X"].reason
+
+
+def test_skip_zero_is_the_original_strategy():
+    assert Momentum(lookback=126, top=5).params() == {"lookback": 126, "top": 5, "absolute": True}
+    assert Momentum(lookback=126, top=5, skip=21).params()["skip"] == 21
+    rng = np.random.default_rng(9)
+    hist = {s: 100 * np.cumprod(1 + rng.normal(0.001, 0.02, 200)) for s in "ABCDEF"}
+    assert Momentum(lookback=126, top=3).decide(hist) == Momentum(lookback=126, top=3, skip=0).decide(hist)
+    with pytest.raises(ValueError):
+        Momentum(lookback=21, skip=21)
+    with pytest.raises(ValueError):
+        Momentum(skip=-1)
+
+
+def test_skip_is_not_a_live_setting():
+    s = Settings.from_env({"STRATEGY": "momentum", "MOMENTUM_SKIP": "21"})
+    assert make_strategy(s).skip == 0
+    assert make_strategy(s, skip=21).skip == 21
+    assert make_strategy(s, skip=21, crash_switch=True).normal.skip == 21
+
+
+def test_sweep_compares_skip_settings():
+    from backtester.sweep import print_sweep, sweep
+
+    s = Settings.from_env({"DATA_PROVIDER": "synthetic", "SYMBOLS": "@sectors"})
+    out = sweep(s, start="2016-01-01", end="2022-12-31", lookbacks=(126,), tops=(5,), skips=(0, 21))
+    assert [(r["lookback"], r["skip"]) for r in out["rows"]] == [(126, 0), (126, 21)]
+    assert out["rows"][0]["cagr"] != out["rows"][1]["cagr"]
+    print_sweep(out)
+
+
+@pytest.mark.parametrize("argv", [
+    ["--skip", "0,21"],  # several values only in a sweep
+    ["--sweep", "--strategy", "momentum", "--skip", "-5"],
+    ["--sweep", "--strategy", "momentum", "--lookbacks", "21", "--skip", "21"],  # skip must sit inside the lookback
+    ["--strategy", "trend", "--skip", "21"],
+    ["--crash-report", "--skip", "21"],
+])
+def test_cli_rejects_bad_skip_flags(argv):
+    from backtester.main import main
+
+    with pytest.raises(SystemExit):
+        main(argv)
+
+
+# --- volatility-scaled momentum (backtester only) ----------------------------
+
+def _wiggle(vols, drift):
+    """Prices rising by `drift` a day with an up/down wiggle of size vols[t] (daily volatility = vols[t])."""
+    vols = np.asarray(vols, dtype=float)
+    signs = np.where(np.arange(vols.size) % 2 == 0, 1.0, -1.0)
+    return 100 * np.cumprod(1 + drift + signs * vols)
+
+
+def _calm_then(spike_vol, n=300):
+    """Two rising stocks with 1% daily wiggle, whose last 21 days wiggle by `spike_vol`."""
+    vols = np.concatenate([np.full(n - 21, 0.01), np.full(21, spike_vol)])
+    return {"A": _wiggle(vols, 0.003), "B": _wiggle(vols * 1.1, 0.002)}
+
+
+def test_vol_scaling_stays_fully_invested_in_a_calm_market():
+    hist = _calm_then(0.01)
+    sig = Momentum(lookback=126, top=2, vol_short=21).decide(hist)
+    total = sum(x.weight for x in sig.values())
+    assert total == pytest.approx(1.0, abs=0.25) and total <= 1.0 + 1e-9
+    assert "volatility scaling" in sig["A"].reason
+
+
+def test_vol_scaling_cuts_exposure_when_volatility_spikes():
+    hist = _calm_then(0.04)  # recent days about 4x as volatile as usual
+    sig = Momentum(lookback=126, top=2, vol_short=21).decide(hist)
+    weights = [x.weight for x in sig.values() if x.weight]
+    assert len(weights) == 2 and weights[0] == pytest.approx(weights[1])
+    assert 0.1 < sum(weights) < 0.6  # roughly normal/recent of the basket
+    assert "% invested" in sig["A"].reason
+
+
+def test_vol_scaling_never_invests_more_than_the_target():
+    vols = np.concatenate([np.full(279, 0.04), np.full(21, 0.002)])  # recently much calmer than usual
+    hist = {"A": _wiggle(vols, 0.004), "B": _wiggle(vols, 0.003)}
+    sig = Momentum(lookback=126, top=2, vol_short=21).decide(hist)
+    assert sum(x.weight for x in sig.values()) == pytest.approx(1.0)
+
+
+def test_vol_scaling_off_is_the_original_strategy():
+    hist = _calm_then(0.04)
+    assert Momentum(lookback=126, top=2).decide(hist) == Momentum(lookback=126, top=2, vol_short=0).decide(hist)
+    assert Momentum(lookback=126, top=5).params() == {"lookback": 126, "top": 5, "absolute": True}
+    on = Momentum(lookback=126, top=5, vol_short=21)
+    assert on.params()["vol_short"] == 21 and on.params()["vol_long"] == 252 and on.warmup_bars == 253
+    assert Momentum(lookback=126, top=5).warmup_bars == 127
+    for bad in (dict(vol_short=-1), dict(vol_short=1), dict(vol_short=300)):
+        with pytest.raises(ValueError):
+            Momentum(**bad)
+
+
+def test_vol_scaling_with_short_history_stays_fully_invested():
+    hist = {s: v[-110:] for s, v in _calm_then(0.04).items()}  # 109 daily returns < 2 x 63
+    sig = Momentum(lookback=100, top=2, vol_short=63).decide(hist)
+    assert sum(x.weight for x in sig.values()) == pytest.approx(1.0)
+    assert "not enough history" in sig["A"].reason
+
+
+def test_vol_scaling_setting_reaches_the_strategy():
+    on = Settings.from_env({"STRATEGY": "momentum", "MOMENTUM_VOL_SCALE": "21"})
+    assert on.momentum_vol_scale == 21 and make_strategy(on).vol_short == 21
+    off = Settings.from_env({"STRATEGY": "momentum"})
+    assert off.momentum_vol_scale == 0 and make_strategy(off).vol_short == 0
+    assert make_strategy(on, vol_short=0).vol_short == 0  # backtester --vol-scale 0 still overrides
+    assert make_strategy(on, crash_switch=True).normal.vol_short == 21
+    for bad in ("1", "252", "-2", "abc", "2.5"):
+        with pytest.raises(ValueError, match="MOMENTUM_VOL_SCALE"):
+            Settings.from_env({"MOMENTUM_VOL_SCALE": bad})
+
+
+def test_sweep_compares_vol_scaling_and_backtest_runs():
+    from backtester.main import run
+    from backtester.sweep import print_sweep, sweep
+
+    s = Settings.from_env({"DATA_PROVIDER": "synthetic", "SYMBOLS": "@sectors"})
+    out = sweep(s, start="2016-01-01", end="2022-12-31", lookbacks=(126,), tops=(5,), vols=(0, 21))
+    assert [r["vol_scale"] for r in out["rows"]] == [0, 21]
+    print_sweep(out)
+    summary = run(s, start="2016-01-01", end="2020-12-31", strategy="momentum", vol_scale=21, save=False)
+    assert summary["params"]["vol_short"] == 21
+
+
+@pytest.mark.parametrize("argv", [
+    ["--vol-scale", "0,21"],
+    ["--sweep", "--strategy", "momentum", "--vol-scale", "1"],
+    ["--sweep", "--strategy", "momentum", "--vol-scale", "400"],
+    ["--strategy", "trend", "--vol-scale", "21"],
+    ["--crash-report", "--vol-scale", "21"],
+])
+def test_cli_rejects_bad_vol_scale_flags(argv):
+    from backtester.main import main
+
+    with pytest.raises(SystemExit):
+        main(argv)
