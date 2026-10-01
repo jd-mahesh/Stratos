@@ -123,7 +123,7 @@ def test_cash_earns_interest():
 # --- live trader with monthly strategies and live prices --------------------
 
 def monthly(**extra):
-    env = {"SYMBOLS": "UP,DOWN", "STRATEGY": "trend", "TREND_WINDOW": "20"}
+    env = {"SYMBOLS": "UP,DOWN", "STRATEGY": "trend", "TREND_WINDOW": "20", "MAX_ORDER_PCT": "100", "MAX_POSITION_PCT": "100"}
     env.update(extra)
     return Settings.from_env(env)
 

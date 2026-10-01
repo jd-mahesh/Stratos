@@ -25,6 +25,11 @@ Signal modes (SIGNAL_MODE):
 Sizing and order planning use trader_core/portfolio.py, the same code as the
 backtest: target weight x account value, sells first, never more than the cash
 on hand (no margin), fractional shares where the asset allows.
+
+Safeguards (trader_core/safeguards.py) wrap every run: a kill switch, a loss
+circuit breaker that halts until someone resumes it, price sanity checks, and
+order limits checked before anything is sent. Problems raise alerts
+(live_trader/alerts.py).
 """
 from __future__ import annotations
 
@@ -38,15 +43,20 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from trader_core import db
+from trader_core import db, safeguards
 from trader_core.config import Settings
 from trader_core.portfolio import Order, plan_buys, plan_sells, share_quantity  # noqa: F401 (re-exported)
 from trader_core.strategy import Strategy, make_strategy
 
+from .alerts import alert
 from .broker import Broker, DuplicateOrderError
 
 log = logging.getLogger("live_trader")
 NY = ZoneInfo("America/New_York")
+
+
+class SafetyConfigError(ValueError):
+    """The settings would make normal trading break the safety limits; the bot refuses to start."""
 
 
 def order_bucket(scheduled_time: Optional[str], now: datetime) -> str:
@@ -117,6 +127,11 @@ def run_tick(
         return {"status": "market_closed", "ts": now.isoformat()}
 
     strategy = make_strategy(settings)
+    problem = safeguards.check_settings(strategy, len(symbols), settings)
+    if problem:
+        alert(engine, settings, "settings", f"Stratos refuses to trade: {problem}", now, logging.ERROR)
+        raise SafetyConfigError(problem)
+
     today = now.astimezone(NY).date()
     month = today.strftime("%Y-%m")
     key = rebalance_key(strategy)
@@ -124,11 +139,31 @@ def run_tick(
     has_modes = getattr(strategy, "detector", None) is not None
     done_this_month = strategy.rebalance == "monthly" and db.get_state(engine, key) == month
 
-    def not_due(note: str, mode: Optional[str] = None) -> Dict:
+    def stopped(status: str, note: str, mode: Optional[str] = None) -> Dict:
         equity = _snapshot(engine, broker, now)
-        log.info(note)
-        return {"status": "ok", "rebalanced": False, "note": note, "mode": mode, "ts": now.isoformat(),
+        log.warning(note) if status != "ok" else log.info(note)
+        return {"status": status, "rebalanced": False, "note": note, "mode": mode, "ts": now.isoformat(),
                 "equity": equity, "dry_run": settings.dry_run, "decisions": []}
+
+    def not_due(note: str, mode: Optional[str] = None) -> Dict:
+        return stopped("ok", note, mode)
+
+    # --- safeguards that stop the whole run --------------------------------------
+    if settings.trading_halted:
+        return stopped("halted", "kill switch is on (TRADING_HALTED=true): balances recorded, no orders placed")
+    halt = safeguards.get_halt(engine)
+    if halt:
+        return stopped("halted", f"trading halted since {halt.get('since')}: {halt.get('reason')}. "
+                                 "Check what happened, then run `python -m live_trader --resume`.")
+    loss = safeguards.check_losses(engine, broker.get_account().equity, now, settings)
+    if loss:
+        if not settings.dry_run:
+            safeguards.set_halt(engine, loss, now)
+        alert(engine, settings, "circuit-breaker",
+              f"Trading halted: {loss}. Nothing will trade until someone checks and resumes it "
+              "(python -m live_trader --resume).", now, logging.ERROR)
+        suffix = " (dry run: halt not recorded)" if settings.dry_run else ""
+        return stopped("halted", f"circuit breaker: {loss}{suffix}")
 
     if done_this_month and not has_modes:
         return not_due(f"{strategy.name} rebalances monthly; done for {month}, next in {_next_month(today)}")
@@ -137,8 +172,15 @@ def run_tick(
     extras = [s for s in strategy.extra_symbols if s not in symbols]
     bars = data.daily_bars(symbols + extras, today - timedelta(days=lookback_days), today)
     prices = data.latest_prices(symbols + extras)
+
+    def trusted_price(symbol: str) -> Optional[float]:
+        """The live price if it passes the sanity checks, else None (fall back to completed closes)."""
+        if safeguards.check_price(bars.get(symbol), prices.get(symbol), today, settings) is None:
+            return prices.get(symbol)
+        return None
+
     extra_history = {
-        s: closes_for_signal(bars[s], today, prices.get(s), settings.signal_mode)
+        s: closes_for_signal(bars[s], today, trusted_price(s), settings.signal_mode)
         for s in strategy.extra_symbols if s in bars
     }
 
@@ -172,6 +214,7 @@ def run_tick(
     trade_symbols = symbols + [a for a in strategy.tradable_extras if a not in symbols]
     rows: Dict[str, Dict] = {}
     history = {}
+    unsafe: Dict[str, str] = {}  # symbol -> why its prices can't be trusted this run
     for symbol in trade_symbols:
         rows[symbol] = {
             "ts": now,
@@ -188,14 +231,24 @@ def run_tick(
             "reason": "no market data",
             "dry_run": settings.dry_run,
         }
+        if symbol in bars or symbol in positions:
+            problem = safeguards.check_price(bars.get(symbol), prices.get(symbol), today, settings)
+            if problem:
+                unsafe[symbol] = problem
+                rows[symbol]["reason"] = f"safety: skipped this run, {problem}"
+                continue
         if symbol in symbols and symbol in bars and prices.get(symbol):
             history[symbol] = closes_for_signal(bars[symbol], today, prices[symbol], settings.signal_mode)
+    if unsafe:
+        alert(engine, settings, "price-check",
+              "Skipped for suspicious price data (will retry next run): "
+              + "; ".join(f"{s}: {why}" for s, why in sorted(unsafe.items())), now)
 
     # Every symbol with data is ranked/evaluated, even ones we can't act on right now.
     signals = strategy.decide(history, len(symbols), extra_history, mode)
     actionable = {}
     for symbol, sig in signals.items():
-        if symbol not in rows or not prices.get(symbol):
+        if symbol not in rows or symbol in unsafe or not prices.get(symbol):
             continue
         row = rows[symbol]
         row.update(fast_ma=sig.fast_ma, slow_ma=sig.slow_ma, target=sig.weight, reason=sig.reason)
@@ -214,6 +267,47 @@ def run_tick(
     def fractional(symbol: str) -> bool:
         return settings.fractional_shares and broker.is_fractionable(symbol)
 
+    def record(decisions_status: str, note: Optional[str] = None) -> Dict:
+        decisions: List[Dict] = [rows[s] for s in trade_symbols
+                                 if s in symbols or rows[s]["action"] != "skip" or rows[s]["current_qty"] > 0]
+        db.insert_rows(engine, db.decisions, decisions)
+        equity = _snapshot(engine, broker, now)
+        summary = {
+            "status": decisions_status,
+            "rebalanced": decisions_status == "ok",
+            "strategy": strategy.name,
+            "signal_mode": settings.signal_mode,
+            "mode": mode,
+            "mode_note": regime.reason if regime is not None else None,
+            "ts": now.isoformat(),
+            "equity": equity,
+            "dry_run": settings.dry_run,
+            "safety": {"skipped": unsafe} if unsafe else {},
+            "decisions": [{k: d[k] for k in ("symbol", "action", "order_qty", "price", "reason")} for d in decisions],
+        }
+        if note:
+            summary["note"] = note
+        for d in summary["decisions"]:
+            log.info("%s %s qty=%s price=%s | %s", d["symbol"], d["action"], d["order_qty"], d["price"], d["reason"])
+        return summary
+
+    # --- plan everything first and check it against the order limits ------------
+    sells = plan_sells(actionable, held, prices, account.equity, True, strategy.resize, fractional)
+    after_sells = dict(held)
+    for order in sells:
+        after_sells[order.symbol] = after_sells.get(order.symbol, 0.0) - order.qty
+    expected_cash = max(account.cash, 0.0) + sum(o.qty * prices[o.symbol] for o in sells)
+    planned_buys, _ = plan_buys(actionable, {s: q for s, q in after_sells.items() if q > 1e-9}, prices,
+                                account.equity, expected_cash, True, strategy.resize, fractional)
+    problems = safeguards.check_orders(sells + planned_buys, held, prices, account.equity, settings)
+    if problems:
+        for order in sells + planned_buys:
+            rows[order.symbol].update(action="blocked", order_qty=float(order.qty))
+            rows[order.symbol]["reason"] += f"; {order.note}; run cancelled by safety limits, nothing sent"
+        message = "Run cancelled, no orders sent: " + "; ".join(problems)
+        alert(engine, settings, "order-limits", message, now, logging.ERROR)
+        return record("blocked", message)
+
     def send(order: Order) -> bool:
         nonlocal errors
         row = rows[order.symbol]
@@ -231,47 +325,36 @@ def run_tick(
         except Exception as exc:  # keep going for the other symbols, but record it
             log.exception("order failed for %s", order.symbol)
             row.update(action="error", reason=f"{row['reason']}; order failed: {exc}")
+            alert(engine, settings, f"order-error:{order.symbol}",
+                  f"{order.side} order for {order.qty:g} {order.symbol} failed: {exc}", now, logging.ERROR)
             errors = True
         return False
 
     # Sells first; the cash they free up (at today's price) pays for the buys.
     freed = 0.0
-    for order in plan_sells(actionable, held, prices, account.equity, True, strategy.resize, fractional):
+    for order in sells:
         if send(order):
             freed += order.qty * prices[order.symbol]
             held[order.symbol] = held.get(order.symbol, 0.0) - order.qty
     held = {s: q for s, q in held.items() if q > 1e-9}
 
+    # Re-plan buys with the cash the sells actually freed (a failed sell frees nothing).
     buys, skipped = plan_buys(actionable, held, prices, account.equity, max(account.cash, 0.0) + freed,
                               True, strategy.resize, fractional)
     for symbol, why in skipped.items():
         rows[symbol].update(action="skip", reason=f"{rows[symbol]['reason']}; {why}")
+    late = safeguards.check_orders(buys, held, prices, account.equity, settings)
+    if late:  # can't normally happen (a subset of what passed above), but never send unchecked orders
+        message = "Buys cancelled, not sent: " + "; ".join(late)
+        alert(engine, settings, "order-limits", message, now, logging.ERROR)
+        errors = True
+        buys = []
     for order in buys:
         send(order)
 
-    # Log every symbol in the list, plus crash-mode assets whenever they're involved.
-    decisions: List[Dict] = [rows[s] for s in trade_symbols
-                             if s in symbols or rows[s]["action"] != "skip" or rows[s]["current_qty"] > 0]
-    db.insert_rows(engine, db.decisions, decisions)
-    if not settings.dry_run and not errors:
+    if not settings.dry_run and not errors and not unsafe:
         if strategy.rebalance == "monthly":
             db.set_state(engine, key, month)
         if has_modes and mode is not None:
             db.set_state(engine, mode_key, mode)
-    equity = _snapshot(engine, broker, now)
-
-    summary = {
-        "status": "ok",
-        "rebalanced": True,
-        "strategy": strategy.name,
-        "signal_mode": settings.signal_mode,
-        "mode": mode,
-        "mode_note": regime.reason if regime is not None else None,
-        "ts": now.isoformat(),
-        "equity": equity,
-        "dry_run": settings.dry_run,
-        "decisions": [{k: d[k] for k in ("symbol", "action", "order_qty", "price", "reason")} for d in decisions],
-    }
-    for d in summary["decisions"]:
-        log.info("%s %s qty=%s price=%s | %s", d["symbol"], d["action"], d["order_qty"], d["price"], d["reason"])
-    return summary
+    return record("ok")

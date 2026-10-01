@@ -255,6 +255,27 @@ periods before 2021: it's a list of 2020's winners.)
 `--cash-rate 3` credits idle cash with 3% a year, closer to what a money-market fund paid
 in recent years; the "same exposure" benchmark gets the same rate.
 
+## Safety
+
+Stratos is built to the standard of a real-money account even while it paper trades.
+Every live run goes through `trader_core/safeguards.py`; every problem is logged and sent
+as an alert (`live_trader/alerts.py`: emailed through AWS SNS when `ALERT_TOPIC_ARN` is set,
+at most once a day per problem). All limits are settings in `.env` (see `.env.example`).
+
+| Safeguard | What it does | Default |
+|---|---|---|
+| Kill switch | `TRADING_HALTED=true`: record balances, place no orders | off |
+| Settings check | Refuse to start if the strategy's normal targets would break the limits (e.g. `MOMENTUM_TOP=2` = 50% per stock) | on |
+| Order limits | Check the whole plan before sending anything; any breach cancels the run | 25% per buy, 30% per position, 20 orders per run |
+| Short-sale guard | Never sell more than is held | on |
+| Price sanity | Skip a symbol whose live price is missing, whose data is stale, or that moved implausibly far from its last close; retry next run | 40% move, 5 days old |
+| Circuit breaker | Halt after a big loss in a day or from the peak, and stay halted until a person runs `python -m live_trader --resume` (or invokes the Lambda with `{"resume": true}`) | 15% in a day, 60% from peak |
+
+The defaults sit beyond anything the strategy does normally (its worst backtested drop was
+about 40%), so they only trip when something is broken: bad data, a bug, a misconfiguration.
+Deposits or withdrawals look like gains or losses to the circuit breaker. The dashboard shows
+a red banner while trading is halted.
+
 ## Reading backtest results honestly
 
 Every backtest prints three columns:

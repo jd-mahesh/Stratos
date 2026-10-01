@@ -272,7 +272,7 @@ class CrashingData:
 
 def crash_settings(**extra):
     env = {"SYMBOLS": "UP,DOWN", "STRATEGY": "momentum", "MOMENTUM_LOOKBACK": "20", "MOMENTUM_TOP": "1",
-           "CRASH_SWITCH": "true", "CRASH_WINDOW": "50"}
+           "CRASH_SWITCH": "true", "CRASH_WINDOW": "50", "MAX_ORDER_PCT": "100", "MAX_POSITION_PCT": "100"}
     env.update(extra)
     return Settings.from_env(env)
 

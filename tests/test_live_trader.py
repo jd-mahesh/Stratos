@@ -66,7 +66,8 @@ class FakeData:
 
 
 def settings(**extra):
-    env = {"SYMBOLS": "UP,DOWN", "FAST_WINDOW": "5", "SLOW_WINDOW": "20"}
+    # two-stock test universe: 50% per stock, so the safety limits are opened up (see test_safeguards.py)
+    env = {"SYMBOLS": "UP,DOWN", "FAST_WINDOW": "5", "SLOW_WINDOW": "20", "MAX_ORDER_PCT": "100", "MAX_POSITION_PCT": "100"}
     env.update(extra)
     return Settings.from_env(env)
 
@@ -238,7 +239,7 @@ class VolData:
 
 def vol_settings(**extra):
     env = {"SYMBOLS": "UP,UP2", "STRATEGY": "momentum", "MOMENTUM_LOOKBACK": "126", "MOMENTUM_TOP": "2",
-           "MOMENTUM_VOL_SCALE": "21"}
+           "MOMENTUM_VOL_SCALE": "21", "MAX_ORDER_PCT": "100", "MAX_POSITION_PCT": "100"}
     env.update(extra)
     return Settings.from_env(env)
 

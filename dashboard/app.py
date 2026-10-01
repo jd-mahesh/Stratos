@@ -81,6 +81,15 @@ def paper_tab() -> None:
     c3.metric("Since first run", pct(latest["equity"] / first["equity"] - 1))
     c4.metric("Last update (ET)", latest["ts"].strftime("%b %d, %H:%M"))
 
+    halt = query("SELECT value FROM bot_state WHERE key = 'halt'")
+    if not halt.empty and halt.iloc[0]["value"]:
+        try:
+            info = json.loads(halt.iloc[0]["value"])
+        except ValueError:
+            info = {"reason": halt.iloc[0]["value"], "since": "unknown"}
+        st.error(f"Trading is halted by the circuit breaker (since {info.get('since')}): {info.get('reason')}. "
+                 "No orders are placed until it's resumed with `python -m live_trader --resume`.")
+
     mode = query("SELECT value, updated_at FROM bot_state WHERE key LIKE 'mode:%' ORDER BY updated_at DESC LIMIT 1")
     if not mode.empty:
         if mode.iloc[0]["value"] == "crash":

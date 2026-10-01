@@ -53,6 +53,37 @@ def _vol_scale(value: Optional[str]) -> int:
     return days
 
 
+def _percent(env: Mapping[str, str], name: str, default: float, upper: float = 100) -> float:
+    """A safeguard limit written as a percent (e.g. 25), returned as a fraction (0.25).
+
+    Must be above 0 and at most ``upper``; a bad value stops the bot with a clear
+    error instead of silently trading without the limit.
+    """
+    raw = env.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default / 100
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number (a percent, e.g. {default:g}), not {raw!r}") from None
+    if not 0 < value <= upper:
+        raise ValueError(f"{name} must be above 0 and at most {upper:g} (percent), not {raw}")
+    return value / 100
+
+
+def _positive_int(env: Mapping[str, str], name: str, default: int) -> int:
+    raw = env.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a whole number, not {raw!r}") from None
+    if value < 1:
+        raise ValueError(f"{name} must be at least 1, not {value}")
+    return value
+
+
 def read_dotenv(path: str = ".env") -> Dict[str, str]:
     """Minimal .env reader (KEY=VALUE lines, # comments) for running outside Docker."""
     values: Dict[str, str] = {}
@@ -112,6 +143,16 @@ class Settings:
     fractional_shares: bool = True  # buy fractional shares where Alpaca allows it
     dry_run: bool = False
     force_run: bool = False  # run even when the market is closed (testing)
+    # Safeguards (trader_core/safeguards.py). Percents are stored as fractions (25 -> 0.25).
+    trading_halted: bool = False  # kill switch: record balances, place no orders
+    max_order_pct: float = 0.25  # no single buy larger than this share of the account
+    max_position_pct: float = 0.30  # no buy that leaves one symbol above this share of the account
+    max_orders_per_run: int = 20  # cancel the run if it plans more orders than this
+    max_price_move_pct: float = 0.40  # skip a symbol whose live price is this far from its last close
+    max_data_age_days: int = 5  # skip a symbol whose latest daily bar is older than this (calendar days)
+    daily_loss_halt_pct: float = 0.15  # halt if the account falls this much since the previous day
+    drawdown_halt_pct: float = 0.60  # halt if the account falls this much from its peak
+    alert_topic_arn: Optional[str] = None  # AWS SNS topic for alert emails (none = log only)
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "Settings":
@@ -153,6 +194,15 @@ class Settings:
             fractional_shares=_bool(env.get("FRACTIONAL_SHARES"), default=True),
             dry_run=_bool(env.get("DRY_RUN")),
             force_run=_bool(env.get("FORCE_RUN")),
+            trading_halted=_bool(env.get("TRADING_HALTED")),
+            max_order_pct=_percent(env, "MAX_ORDER_PCT", 25),
+            max_position_pct=_percent(env, "MAX_POSITION_PCT", 30),
+            max_orders_per_run=_positive_int(env, "MAX_ORDERS_PER_RUN", 20),
+            max_price_move_pct=_percent(env, "MAX_PRICE_MOVE_PCT", 40, upper=1000),
+            max_data_age_days=_positive_int(env, "MAX_DATA_AGE_DAYS", 5),
+            daily_loss_halt_pct=_percent(env, "DAILY_LOSS_HALT_PCT", 15),
+            drawdown_halt_pct=_percent(env, "DRAWDOWN_HALT_PCT", 60),
+            alert_topic_arn=(env.get("ALERT_TOPIC_ARN") or "").strip() or None,
         )
 
     def require_alpaca(self) -> None:
