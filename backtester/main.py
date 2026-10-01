@@ -158,11 +158,14 @@ def run(
     cash_rate: Optional[float] = None,
     crash_switch: Optional[bool] = None,
     crash_confirm: Optional[int] = None,
+    every: Optional[int] = None,
 ) -> Dict:
     universe = describe(symbols) if symbols else settings.universe
     symbols = expand(symbols) if symbols else settings.symbols
     strategy = make_strategy(settings, strategy, fast=fast, slow=slow, window=window, lookback=lookback, top=top,
-                             crash_switch=crash_switch, crash_confirm=crash_confirm)
+                             crash_switch=crash_switch, crash_confirm=crash_confirm, every=every)
+    if every and strategy.rebalance != "every":
+        raise ValueError(f"--every only applies to momentum, not {strategy.name}")
     signal_mode = (signal_mode or settings.signal_mode).lower()
     cash_rate = settings.cash_rate if cash_rate is None else cash_rate
     provider_name = (provider or settings.data_provider).lower()
@@ -268,6 +271,19 @@ def _on_off(value: Optional[str]) -> Optional[bool]:
     return None if value is None else value == "on"
 
 
+def _int_list(value: Optional[str]) -> Optional[List[int]]:
+    """'2,5,10' -> [2, 5, 10]; None stays None."""
+    if value is None:
+        return None
+    try:
+        out = [int(v) for v in value.split(",") if v.strip()]
+    except ValueError:
+        raise ValueError(f"expected comma-separated whole numbers, got {value!r}") from None
+    if not out:
+        raise ValueError(f"expected at least one number, got {value!r}")
+    return list(dict.fromkeys(out))
+
+
 def _settings(args) -> Settings:
     """Settings from the environment, with --crash-confirm applied."""
     settings = Settings.from_env()
@@ -291,6 +307,13 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--top", type=int, help="momentum: how many symbols to hold (default 3)")
     parser.add_argument("--crash-switch", choices=["on", "off"],
                         help="switch to the crash-mode backup while the market is crash-like (default: CRASH_SWITCH)")
+    parser.add_argument("--every", metavar="DAYS",
+                        help="momentum: rebalance every DAYS trading days instead of monthly (0 = monthly). "
+                             "In a sweep, a comma-separated list to compare, e.g. 2,5,10,0")
+    parser.add_argument("--lookbacks", metavar="DAYS",
+                        help="sweep: comma-separated lookbacks in trading days (default 63,126,252)")
+    parser.add_argument("--tops", metavar="N",
+                        help="sweep: comma-separated numbers of symbols to hold (default 1,2,3,5)")
     parser.add_argument("--crash-confirm", type=int, metavar="DAYS",
                         help="crash mode switches only after the rule holds this many daily closes in a row "
                              "(default: CRASH_CONFIRM_DAYS or 1 = switch at once)")
@@ -315,6 +338,24 @@ def main(argv: Optional[List[str]] = None) -> None:
     args = parser.parse_args(argv)
     if args.crash_confirm is not None and args.crash_confirm < 1:
         parser.error("--crash-confirm must be at least 1")
+    try:
+        everys = _int_list(args.every)
+        lookbacks = _int_list(args.lookbacks)
+        tops = _int_list(args.tops)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if everys and any(e < 0 for e in everys):
+        parser.error("--every must be 0 (monthly) or a positive number of trading days")
+    if (lookbacks and any(x < 2 for x in lookbacks)) or (tops and any(x < 1 for x in tops)):
+        parser.error("--lookbacks must be at least 2 and --tops at least 1")
+    if not args.sweep and (lookbacks or tops):
+        parser.error("--lookbacks and --tops are for --sweep; use --lookback and --top for a single backtest")
+    if not args.sweep and everys and len(everys) > 1:
+        parser.error("--every takes a single value outside --sweep")
+    if args.crash_report and everys:
+        parser.error("--every isn't supported with --crash-report yet")
+    if everys and any(everys) and (args.strategy or Settings.from_env().strategy) != "momentum":
+        parser.error("--every only applies to --strategy momentum")
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     symbols = (["@" + args.universe] if args.universe else []) + (args.symbols.split(",") if args.symbols else [])
@@ -341,6 +382,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         result = sweep(_settings(args), symbols=symbols or None, start=args.start, end=args.end,
                        split=args.split, provider=args.provider, signal_mode=args.signal_mode,
                        normal_only=args.normal_only,
+                       everys=everys or (0,),
+                       **({"lookbacks": lookbacks} if lookbacks else {}),
+                       **({"tops": tops} if tops else {}),
                        cash_rate=None if args.cash_rate is None else args.cash_rate / 100,
                        slippage_bps=args.slippage_bps)
         if args.json:
@@ -368,6 +412,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         cash_rate=None if args.cash_rate is None else args.cash_rate / 100,
         crash_switch=_on_off(args.crash_switch),
         crash_confirm=args.crash_confirm,
+        every=everys[0] if everys else None,
     )
     if args.json:
         print(json.dumps(summary, indent=2, default=str))

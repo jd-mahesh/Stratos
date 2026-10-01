@@ -69,7 +69,8 @@ def _prices(closes: Sequence[float], need: int) -> Optional[np.ndarray]:
 
 class Strategy:
     name = "base"
-    rebalance = "daily"  # "daily" or "monthly": how often targets are recomputed and acted on
+    rebalance = "daily"  # "daily", "monthly" or "every": how often targets are recomputed and acted on
+    every = 0  # with rebalance == "every": rebalance every this many trading days (backtester only for now)
     resize = False  # on a rebalance, trim or top up held positions back to their target weight
 
     def params(self) -> dict:
@@ -202,14 +203,28 @@ class Momentum(Strategy):
     lookback: int = 252  # trading days, about 12 months
     top: int = 3
     absolute: bool = True  # only hold symbols whose own return is positive
+    every: int = 0  # 0 = rebalance monthly; N = every N trading days (backtester only, see engine.py)
 
     name = "momentum"
-    rebalance = "monthly"
     resize = True
 
     def __post_init__(self) -> None:
         if self.lookback < 2 or self.top < 1:
             raise ValueError("lookback must be at least 2 and top at least 1")
+        if self.every < 0:
+            raise ValueError("every must be 0 (monthly) or a number of trading days")
+
+    @property
+    def rebalance(self) -> str:  # type: ignore[override]
+        return "every" if self.every else "monthly"
+
+    def params(self) -> dict:
+        # "every" is left out when monthly, so existing runs and the live trader's
+        # rebalance bookkeeping (keyed on these params) are unchanged
+        out = asdict(self)
+        if not self.every:
+            out.pop("every")
+        return out
 
     @property
     def required_bars(self) -> int:
@@ -221,7 +236,8 @@ class Momentum(Strategy):
 
     def describe(self) -> str:
         rule = ", only if that return is positive" if self.absolute else ""
-        return f"each month, hold the {self.top} symbols with the best {self._period()} return{rule}"
+        when = f"every {self.every} trading days" if self.every else "each month"
+        return f"{when}, hold the {self.top} symbols with the best {self._period()} return{rule}"
 
     def decide(self, history: History, slots: Optional[int] = None, extra: Optional[History] = None,
                mode: Optional[str] = None) -> Dict[str, Signal]:
@@ -331,6 +347,10 @@ class CrashSwitch(Strategy):
     @property
     def resize(self) -> bool:  # type: ignore[override]
         return self.normal.resize
+
+    @property
+    def every(self) -> int:  # type: ignore[override]
+        return getattr(self.normal, "every", 0)
 
     def params(self) -> dict:
         crash = (f"{self.detector.index} -{self.detector.drawdown * 100:.0f}%/{self.detector.window}d -> "

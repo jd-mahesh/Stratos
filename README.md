@@ -181,6 +181,20 @@ and splits the period in half. A setting passes only if it beats buy & hold in *
 halves. Prefer a setting whose neighbours pass too; a lone winner is more likely luck.
 Sweep runs aren't saved to the dashboard.
 
+**Rebalancing more often.** Momentum rebalances monthly by default. `--every N` makes a
+backtest rebalance every N trading days instead (5 = weekly), and in a sweep it takes a
+list to compare, with `0` meaning monthly. `--lookbacks` and `--tops` set the rest of the
+grid (in trading days and number of symbols):
+
+```bash
+python -m backtester --strategy momentum --sweep --universe sectors --provider yfinance \
+  --start 1999-06-01 --lookbacks 21,63,126 --tops 5 --every 2,5,10,0
+```
+
+Faster rebalancing reacts sooner but trades much more; the per-trade cost (`--slippage-bps`,
+default 5) is charged on every trade, so the comparison includes that. This is a
+backtester-only setting for now: the live trader still rebalances monthly.
+
 ### Adding a strategy
 
 Everything else (backtester, live trader, dashboard) works with any strategy, so a new one

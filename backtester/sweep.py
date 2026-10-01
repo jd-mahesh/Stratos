@@ -8,6 +8,15 @@ how backtests lie: with enough tries, something always looks great by luck.
 So the grid is short (3, 6 and 12-month lookbacks; hold the top 1, 2, 3 or 5),
 and a setting only "passes" if it beats buy & hold in the first half of the
 period AND in the second half, which it had no say in choosing.
+
+The grid can be changed from the command line (--lookbacks, --tops) and can
+also vary how often the strategy rebalances (--every: 0 = monthly, N = every N
+trading days), e.g. to see whether reacting faster pays for its extra trades:
+
+    python -m backtester --strategy momentum --sweep --universe sectors --provider yfinance \
+        --start 1999-06-01 --lookbacks 21,63,126 --tops 5 --every 2,5,10,0
+
+Pick the grid before looking at the results, and keep it small.
 """
 from __future__ import annotations
 
@@ -30,6 +39,11 @@ log = logging.getLogger("backtester")
 
 DEFAULT_LOOKBACKS = (63, 126, 252)  # ~3, 6 and 12 months of trading days
 DEFAULT_TOPS = (1, 2, 3, 5)
+DEFAULT_EVERY = (0,)  # 0 = monthly (the strategy's normal schedule)
+
+
+def every_label(every: int) -> str:
+    return "monthly" if not every else f"every {every}d"
 
 
 def _cagr(total_return: float, start, end) -> Optional[float]:
@@ -66,6 +80,7 @@ def sweep(
     cash_rate: Optional[float] = None,
     slippage_bps: float = 5.0,
     normal_only: bool = False,
+    everys: Sequence[int] = DEFAULT_EVERY,
 ) -> Dict:
     """Run the grid. With ``normal_only``, every return is measured on normal-market
     days only, as judged by the crash detector (CRASH_INDEX etc.), so crashes don't
@@ -106,47 +121,48 @@ def sweep(
                   signal_mode=signal_mode, cash_rate=cash_rate)
 
     rows = []
-    for lookback in lookbacks:
-        for top in tops:
-            strat = make_strategy(settings, "momentum", lookback=lookback, top=top, crash_switch=False)
-            full = run_backtest(prices, strat, settings.initial_capital, start=start_d, **common)
-            eq, bh = full.equity["equity"], full.equity["benchmark_equity"]
-            if normal_only:
-                cagr, bench = _normal_cagr(eq, normal), _normal_cagr(bh, normal)
-                parts = [(_normal_cagr(eq, normal, end=split_d), _normal_cagr(bh, normal, end=split_d)),
-                         (_normal_cagr(eq, normal, start=split_d), _normal_cagr(bh, normal, start=split_d))]
-                normal_share = float(normal.reindex(eq.index).eq(True).mean())
-            else:
-                m = full.metrics
-                cagr = _cagr(m["total_return"], full.start, full.end)
-                bench = _cagr(m["benchmark_return"], full.start, full.end)
-                parts = []
-                for data, part_start in ((first_half, start_d), (prices, split_d)):
-                    try:
-                        r = run_backtest(data, strat, settings.initial_capital, start=part_start, **common)
-                    except ValueError:  # not enough history in that half for this lookback
-                        parts.append((None, None))
-                        continue
-                    pm = r.metrics
-                    parts.append((_cagr(pm["total_return"], r.start, r.end), _cagr(pm["benchmark_return"], r.start, r.end)))
+    grid = [(lookback, top, every) for every in everys for lookback in lookbacks for top in tops]
+    for lookback, top, every in grid:
+        strat = make_strategy(settings, "momentum", lookback=lookback, top=top, every=every, crash_switch=False)
+        full = run_backtest(prices, strat, settings.initial_capital, start=start_d, **common)
+        eq, bh = full.equity["equity"], full.equity["benchmark_equity"]
+        if normal_only:
+            cagr, bench = _normal_cagr(eq, normal), _normal_cagr(bh, normal)
+            parts = [(_normal_cagr(eq, normal, end=split_d), _normal_cagr(bh, normal, end=split_d)),
+                     (_normal_cagr(eq, normal, start=split_d), _normal_cagr(bh, normal, start=split_d))]
+            normal_share = float(normal.reindex(eq.index).eq(True).mean())
+        else:
             m = full.metrics
-            rows.append({
-                "lookback": lookback,
-                "top": top,
-                "cagr": cagr,
-                "benchmark_cagr": bench,
-                "first_half": parts[0][0],
-                "first_half_benchmark": parts[0][1],
-                "second_half": parts[1][0],
-                "second_half_benchmark": parts[1][1],
-                "max_drawdown": m["max_drawdown"],
-                "sharpe": m["sharpe"],
-                "benchmark_sharpe": m["benchmark_sharpe"],
-                "trades": m["num_trades"],
-                "passes": all(p[0] is not None and p[1] is not None and p[0] > p[1] for p in parts),
-                "start": full.start.isoformat(),
-                "end": full.end.isoformat(),
-            })
+            cagr = _cagr(m["total_return"], full.start, full.end)
+            bench = _cagr(m["benchmark_return"], full.start, full.end)
+            parts = []
+            for data, part_start in ((first_half, start_d), (prices, split_d)):
+                try:
+                    r = run_backtest(data, strat, settings.initial_capital, start=part_start, **common)
+                except ValueError:  # not enough history in that half for this lookback
+                    parts.append((None, None))
+                    continue
+                pm = r.metrics
+                parts.append((_cagr(pm["total_return"], r.start, r.end), _cagr(pm["benchmark_return"], r.start, r.end)))
+        m = full.metrics
+        rows.append({
+            "lookback": lookback,
+            "top": top,
+            "every": every,
+            "cagr": cagr,
+            "benchmark_cagr": bench,
+            "first_half": parts[0][0],
+            "first_half_benchmark": parts[0][1],
+            "second_half": parts[1][0],
+            "second_half_benchmark": parts[1][1],
+            "max_drawdown": m["max_drawdown"],
+            "sharpe": m["sharpe"],
+            "benchmark_sharpe": m["benchmark_sharpe"],
+            "trades": m["num_trades"],
+            "passes": all(p[0] is not None and p[1] is not None and p[0] > p[1] for p in parts),
+            "start": full.start.isoformat(),
+            "end": full.end.isoformat(),
+        })
     return {
         "universe": universe,
         "symbols": sorted(prices),
@@ -184,11 +200,13 @@ def print_sweep(s: Dict) -> None:
     print(f"  Buy & hold: {_pct(r0['benchmark_cagr'])}/yr overall, {_pct(r0['first_half_benchmark'])} first half, "
           f"{_pct(r0['second_half_benchmark'])} second half (per year)")
     print()
-    header = ("Lookback", "Top", "Per year", "1st half", "2nd half", "Worst drop", "Sharpe", "Trades", "Beats B&H in both halves")
+    header = ("Rebalance", "Lookback", "Top", "Per year", "1st half", "2nd half", "Worst drop", "Sharpe", "Trades",
+              "Beats B&H in both halves")
     table = [header]
     for r in rows:
         table.append((
-            f"{round(r['lookback'] / 21)} mo", str(r["top"]), _pct(r["cagr"]), _pct(r["first_half"]),
+            every_label(r.get("every", 0)), f"{round(r['lookback'] / 21)} mo", str(r["top"]), _pct(r["cagr"]),
+            _pct(r["first_half"]),
             _pct(r["second_half"]), _pct(r["max_drawdown"]),
             "n/a" if r["sharpe"] is None else f"{r['sharpe']:.2f}", str(r["trades"]),
             "YES" if r["passes"] else "no",

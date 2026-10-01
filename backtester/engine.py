@@ -260,6 +260,17 @@ def run_backtest(
     def month_starts(i: int) -> bool:
         return i == first or dates[i].month != dates[i - 1].month
 
+    # Rebalance schedule: daily, on the first trading day of each month, or every N trading days.
+    every = int(getattr(strategy, "every", 0) or 0) if strategy.rebalance == "every" else 0
+
+    def trades_today(i: int) -> bool:
+        """Is day i a scheduled rebalance day (trading at its open)?"""
+        if strategy.rebalance == "daily":
+            return True
+        if every:
+            return (i - first) % every == 0
+        return month_starts(i)
+
     # Buy-and-hold benchmark: each symbol's slot is bought at the start, or on listing day if later.
     slot = initial_capital / len(universe)
     bench_from = {s: max(first, listed[s]) for s in universe}
@@ -281,7 +292,7 @@ def run_backtest(
             # "now" = the opening price
             at_open = extra_history(i, True)
             changed = check_mode(extra_history(i - 1, False) if closes_only else at_open)
-            if strategy.rebalance == "daily" or month_starts(i) or changed:
+            if trades_today(i) or changed:
                 execute(i, decide(history(i, open_px), at_open), open_px)
             # "now" = the closing price
             at_close = extra_history(i, False)
@@ -299,7 +310,8 @@ def run_backtest(
         if signal_mode == "close" and i < n - 1:
             at_close = extra_history(i, False)
             changed = check_mode(at_close)
-            if strategy.rebalance == "daily" or i == first or dates[i + 1].month != dates[i].month or changed:
+            # decide at today's close when tomorrow is a rebalance day (and on the first day)
+            if i == first or trades_today(i + 1) or changed:
                 pending = decide(history(i), at_close)
 
         rows.append((dates[i], float(equity), float(bench), float(in_universe / equity) if equity > 0 else 0.0, mode))

@@ -188,3 +188,82 @@ def test_sweep_runs_the_grid_and_checks_both_halves():
         assert r["passes"] == (r["first_half"] > r["first_half_benchmark"]
                                and r["second_half"] > r["second_half_benchmark"])
     assert out["split"] == "2020-07-01"
+
+
+# --- rebalance every N trading days (backtester only) ------------------------
+
+def test_momentum_every_option_and_params():
+    monthly = Momentum(lookback=126, top=5)
+    assert monthly.rebalance == "monthly" and monthly.every == 0
+    # left out when monthly, so stored runs and the live trader's rebalance key don't change
+    assert monthly.params() == {"lookback": 126, "top": 5, "absolute": True}
+    weekly = Momentum(lookback=126, top=5, every=5)
+    assert weekly.rebalance == "every" and weekly.params()["every"] == 5
+    assert weekly.describe().startswith("every 5 trading days")
+    with pytest.raises(ValueError):
+        Momentum(every=-1)
+
+
+def test_every_is_not_a_live_setting():
+    s = Settings.from_env({"STRATEGY": "momentum", "MOMENTUM_EVERY": "5", "REBALANCE_EVERY": "5"})
+    assert make_strategy(s).every == 0  # only the backtester's --every can set it
+    assert make_strategy(s, every=5).every == 5
+    switch = make_strategy(s, crash_switch=True, every=5)
+    assert switch.rebalance == "every" and switch.every == 5
+
+
+def _decision_days(monkeypatch, strategy, mode):
+    """Bar positions (history lengths) at which the engine asked the strategy for targets."""
+    seen = []
+    original = Momentum.decide
+
+    def spy(self, history, *args, **kwargs):
+        seen.append(len(next(iter(history.values()))))
+        return original(self, history, *args, **kwargs)
+
+    monkeypatch.setattr(Momentum, "decide", spy)
+    rng = np.random.default_rng(5)
+    bars = {s: make_bars(100 * np.cumprod(1 + rng.normal(0.0005, 0.02, 400)), start="2022-01-03") for s in "ABCDE"}
+    result = run_backtest(bars, strategy, slippage_bps=0, signal_mode=mode)
+    return seen, result
+
+
+def test_intraday_every_n_decides_on_schedule(monkeypatch):
+    seen, result = _decision_days(monkeypatch, Momentum(lookback=63, top=2, every=5), "intraday")
+    assert len(seen) > 10 and all(b - a == 5 for a, b in zip(seen, seen[1:]))
+    assert result.trades
+
+
+def test_close_mode_every_n_decides_the_close_before_each_rebalance_day(monkeypatch):
+    seen, _ = _decision_days(monkeypatch, Momentum(lookback=63, top=2, every=5), "close")
+    # first decision on the first day, then the close before every 5th day after it
+    assert seen[1] - seen[0] == 4 and all(b - a == 5 for a, b in zip(seen[1:], seen[2:]))
+
+
+def test_every_one_day_matches_daily_rebalancing(monkeypatch):
+    seen, _ = _decision_days(monkeypatch, Momentum(lookback=63, top=2, every=1), "intraday")
+    assert all(b - a == 1 for a, b in zip(seen, seen[1:]))
+
+
+def test_sweep_compares_rebalance_intervals():
+    from backtester.sweep import print_sweep, sweep
+
+    s = Settings.from_env({"DATA_PROVIDER": "synthetic", "SYMBOLS": "@sectors"})
+    out = sweep(s, start="2016-01-01", end="2022-12-31", lookbacks=(63,), tops=(3,), everys=(5, 0))
+    assert [(r["every"], r["lookback"], r["top"]) for r in out["rows"]] == [(5, 63, 3), (0, 63, 3)]
+    weekly, monthly = out["rows"]
+    assert weekly["trades"] >= monthly["trades"]
+    print_sweep(out)  # the table prints with the rebalance column
+
+
+@pytest.mark.parametrize("argv", [
+    ["--every", "2,5"],  # several values only make sense in a sweep
+    ["--lookbacks", "63", "--strategy", "momentum"],  # grid flags need --sweep
+    ["--sweep", "--strategy", "momentum", "--every", "-1"],
+    ["--sweep", "--strategy", "momentum", "--tops", "x"],
+])
+def test_cli_rejects_bad_rebalance_flags(argv):
+    from backtester.main import main
+
+    with pytest.raises(SystemExit):
+        main(argv)
