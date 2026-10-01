@@ -1,7 +1,7 @@
 # Dashboard image: a normal long-running web container (not Lambda).
 #
 # Build from the repo root:
-#   docker build -f docker/dashboard.Dockerfile -t trading-bot-dashboard .
+#   docker build -f docker/dashboard.Dockerfile -t stratos-dashboard .
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \

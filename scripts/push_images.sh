@@ -25,7 +25,7 @@ aws ecr get-login-password --region "$REGION" | docker login --username AWS --pa
 
 build_and_push() {
   local name="$1" dockerfile="$2" platform="$3"
-  local repo="$REGISTRY/trading-bot-$name"
+  local repo="$REGISTRY/stratos-$name"
   echo "Building $name for $platform -> $repo:$TAG"
   # --provenance=false: Lambda rejects the multi-manifest "image index" that buildx
   # produces by default when it attaches provenance attestations.
@@ -36,10 +36,10 @@ build_and_push() {
 }
 
 update_lambda() {
-  local name="$1" fn="trading-bot-$1"
+  local name="$1" fn="stratos-$1"
   if aws lambda get-function --function-name "$fn" --region "$REGION" >/dev/null 2>&1; then
     aws lambda update-function-code --function-name "$fn" --region "$REGION" \
-      --image-uri "$REGISTRY/trading-bot-$name:$TAG" >/dev/null
+      --image-uri "$REGISTRY/stratos-$name:$TAG" >/dev/null
     echo "Lambda $fn now runs :$TAG"
   else
     echo "Lambda $fn doesn't exist yet; create it with the command in docs/DEPLOY.md"

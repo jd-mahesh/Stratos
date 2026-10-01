@@ -40,4 +40,4 @@ jobs:
         service: [backtester, live_trader, dashboard]
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -f docker/${{ matrix.service }}.Dockerfile -t trading-bot-${{ matrix.service }} .
+      - run: docker build -f docker/${{ matrix.service }}.Dockerfile -t stratos-${{ matrix.service }} .

@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make trader_core
 
 from trader_core import db  # noqa: E402
 
-st.set_page_config(page_title="Trading bot", layout="wide")
+st.set_page_config(page_title="Stratos", layout="wide")
 
 
 def check_password() -> bool:
@@ -222,7 +222,7 @@ def backtest_tab() -> None:
 
 
 if check_password():
-    st.title("Trading bot")
+    st.title("Stratos")
     paper, backtests = st.tabs(["Paper account", "Backtests"])
     with paper:
         paper_tab()

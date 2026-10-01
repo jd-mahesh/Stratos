@@ -37,7 +37,7 @@ services:
     build:
       context: .
       dockerfile: docker/backtester.Dockerfile
-    image: trading-bot-backtester
+    image: stratos-backtester
     entrypoint: ["python", "-m", "backtester"]
     depends_on:
       db:
@@ -49,7 +49,7 @@ services:
     build:
       context: .
       dockerfile: docker/live_trader.Dockerfile
-    image: trading-bot-live-trader
+    image: stratos-live-trader
     entrypoint: ["python", "-m", "live_trader"]
     depends_on:
       db:
@@ -61,7 +61,7 @@ services:
     build:
       context: .
       dockerfile: docker/dashboard.Dockerfile
-    image: trading-bot-dashboard
+    image: stratos-dashboard
     ports:
       - "8501:8080"
     depends_on:

@@ -1,7 +1,7 @@
 # Live-trader image, also on the Lambda base image.
 #
 # Build from the repo root:
-#   docker build -f docker/live_trader.Dockerfile -t trading-bot-live-trader .
+#   docker build -f docker/live_trader.Dockerfile -t stratos-live-trader .
 FROM public.ecr.aws/lambda/python:3.12
 
 COPY requirements/ /tmp/requirements/

@@ -1,7 +1,8 @@
-# Trading bot
+# Stratos
 
-Trading strategies that are backtested on historical data and then paper-traded live
-against Alpaca, packaged as three Docker containers that run on AWS.
+Stratos is a cloud-deployed algorithmic trading system. Trading strategies are
+backtested on historical data and then paper-traded live against Alpaca, packaged as
+three Docker containers that run on AWS.
 
 The point of the project is the plumbing as much as the strategy: one strategy
 function shared by backtest and live code, containers that run the same on a laptop
@@ -95,7 +96,7 @@ includes an emulator of the Lambda API. You can call the real Lambda handler loc
 
 ```bash
 docker compose build backtester
-docker run --rm -p 9000:8080 -e DATA_PROVIDER=synthetic trading-bot-backtester
+docker run --rm -p 9000:8080 -e DATA_PROVIDER=synthetic stratos-backtester
 # in another terminal:
 curl -s localhost:9000/2015-03-31/functions/function/invocations -d '{"save": false}'
 ```

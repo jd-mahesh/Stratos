@@ -49,8 +49,8 @@ subnets + NAT or VPC endpoints.
 ```bash
 # A dedicated firewall (security group) for the database
 VPC_ID=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)
-DB_SG=$(aws ec2 create-security-group --group-name trading-bot-db \
-  --description "Postgres for trading bot" --vpc-id $VPC_ID --query GroupId --output text)
+DB_SG=$(aws ec2 create-security-group --group-name stratos-db \
+  --description "Postgres for Stratos" --vpc-id $VPC_ID --query GroupId --output text)
 aws ec2 authorize-security-group-ingress --group-id $DB_SG --protocol tcp --port 5432 --cidr 0.0.0.0/0
 
 # Letters and digits only, so it can go in a URL without escaping. Save it somewhere safe.
@@ -58,7 +58,7 @@ DB_PASSWORD=$(openssl rand -hex 20)
 echo "$DB_PASSWORD"
 
 aws rds create-db-instance \
-  --db-instance-identifier trading-bot-db \
+  --db-instance-identifier stratos-db \
   --engine postgres \
   --db-instance-class db.t4g.micro \
   --allocated-storage 20 \
@@ -71,8 +71,8 @@ aws rds create-db-instance \
   --no-multi-az
 
 # Takes 5–15 minutes
-aws rds wait db-instance-available --db-instance-identifier trading-bot-db
-DB_HOST=$(aws rds describe-db-instances --db-instance-identifier trading-bot-db \
+aws rds wait db-instance-available --db-instance-identifier stratos-db
+DB_HOST=$(aws rds describe-db-instances --db-instance-identifier stratos-db \
   --query 'DBInstances[0].Endpoint.Address' --output text)
 
 DATABASE_URL="postgresql+psycopg2://trader:$DB_PASSWORD@$DB_HOST:5432/trading?sslmode=require"
@@ -102,7 +102,7 @@ cat > secret.json <<EOF
 }
 EOF
 # edit secret.json to paste your Alpaca keys, then:
-SECRET_ARN=$(aws secretsmanager create-secret --name trading-bot/prod \
+SECRET_ARN=$(aws secretsmanager create-secret --name stratos/prod \
   --secret-string file://secret.json --query ARN --output text)
 rm secret.json   # it's in AWS now; don't leave credentials lying around (it's git-ignored too)
 echo "$SECRET_ARN"
@@ -114,9 +114,9 @@ echo "$SECRET_ARN"
 
 ```bash
 for r in backtester live-trader dashboard; do
-  aws ecr create-repository --repository-name trading-bot-$r >/dev/null
+  aws ecr create-repository --repository-name stratos-$r >/dev/null
   # keep only the 5 newest images so storage doesn't pile up
-  aws ecr put-lifecycle-policy --repository-name trading-bot-$r --lifecycle-policy-text \
+  aws ecr put-lifecycle-policy --repository-name stratos-$r --lifecycle-policy-text \
     '{"rules":[{"rulePriority":1,"description":"keep 5","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}' >/dev/null
 done
 ```
@@ -138,16 +138,16 @@ arm64/amd64 split are both things that trip people up.
 A role is the identity a function runs as. This one may write logs and read one secret, nothing else.
 
 ```bash
-aws iam create-role --role-name trading-bot-lambda --assume-role-policy-document \
+aws iam create-role --role-name stratos-lambda --assume-role-policy-document \
   '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 
-aws iam attach-role-policy --role-name trading-bot-lambda \
+aws iam attach-role-policy --role-name stratos-lambda \
   --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 
-aws iam put-role-policy --role-name trading-bot-lambda --policy-name read-trading-secret \
+aws iam put-role-policy --role-name stratos-lambda --policy-name read-trading-secret \
   --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"secretsmanager:GetSecretValue\",\"Resource\":\"$SECRET_ARN\"}]}"
 
-LAMBDA_ROLE=$(aws iam get-role --role-name trading-bot-lambda --query Role.Arn --output text)
+LAMBDA_ROLE=$(aws iam get-role --role-name stratos-lambda --query Role.Arn --output text)
 ```
 
 ---
@@ -160,24 +160,24 @@ The commands below use the four default ETFs in `SYMBOLS`. Paste your own list f
 (the whole `SYMBOLS` value, commas and all).
 
 ```bash
-aws lambda create-function --function-name trading-bot-backtester \
-  --package-type Image --code ImageUri=$REGISTRY/trading-bot-backtester:latest \
+aws lambda create-function --function-name stratos-backtester \
+  --package-type Image --code ImageUri=$REGISTRY/stratos-backtester:latest \
   --role $LAMBDA_ROLE --architectures arm64 --timeout 300 --memory-size 1024 \
-  --environment '{"Variables":{"SECRET_ID":"trading-bot/prod","DATA_PROVIDER":"alpaca","SYMBOLS":"SPY,QQQ,GLD,TLT"}}'
+  --environment '{"Variables":{"SECRET_ID":"stratos/prod","DATA_PROVIDER":"alpaca","SYMBOLS":"SPY,QQQ,GLD,TLT"}}'
 
 # DRY_RUN=true for the first day: it decides and records but sends no orders.
-aws lambda create-function --function-name trading-bot-live-trader \
-  --package-type Image --code ImageUri=$REGISTRY/trading-bot-live-trader:latest \
+aws lambda create-function --function-name stratos-live-trader \
+  --package-type Image --code ImageUri=$REGISTRY/stratos-live-trader:latest \
   --role $LAMBDA_ROLE --architectures arm64 --timeout 60 --memory-size 512 \
-  --environment '{"Variables":{"SECRET_ID":"trading-bot/prod","SYMBOLS":"SPY,QQQ,GLD,TLT","SIGNAL_MODE":"close","DRY_RUN":"true"}}'
+  --environment '{"Variables":{"SECRET_ID":"stratos/prod","SYMBOLS":"SPY,QQQ,GLD,TLT","SIGNAL_MODE":"close","DRY_RUN":"true"}}'
 
-aws lambda wait function-active-v2 --function-name trading-bot-live-trader
+aws lambda wait function-active-v2 --function-name stratos-live-trader
 ```
 
 Run a backtest in the cloud:
 
 ```bash
-aws lambda invoke --function-name trading-bot-backtester \
+aws lambda invoke --function-name stratos-backtester \
   --cli-binary-format raw-in-base64-out --cli-read-timeout 310 \
   --payload '{"start": "2021-01-01"}' out.json && cat out.json
 ```
@@ -185,16 +185,16 @@ aws lambda invoke --function-name trading-bot-backtester \
 Poke the live trader (outside market hours it should answer `"market_closed"`):
 
 ```bash
-aws lambda invoke --function-name trading-bot-live-trader out.json && cat out.json
-aws logs tail /aws/lambda/trading-bot-live-trader --since 10m
+aws lambda invoke --function-name stratos-live-trader out.json && cat out.json
+aws logs tail /aws/lambda/stratos-live-trader --since 10m
 ```
 
 When you're happy with a day of dry-run decisions, turn real (paper) orders on.
 Note that `--environment` **replaces** all variables, so pass the full set:
 
 ```bash
-aws lambda update-function-configuration --function-name trading-bot-live-trader \
-  --environment '{"Variables":{"SECRET_ID":"trading-bot/prod","SYMBOLS":"SPY,QQQ,GLD,TLT","SIGNAL_MODE":"close","DRY_RUN":"false"}}'
+aws lambda update-function-configuration --function-name stratos-live-trader \
+  --environment '{"Variables":{"SECRET_ID":"stratos/prod","SYMBOLS":"SPY,QQQ,GLD,TLT","SIGNAL_MODE":"close","DRY_RUN":"false"}}'
 ```
 
 ---
@@ -206,13 +206,13 @@ It fires from 9:00 to 15:55; the function checks Alpaca's market clock and exits
 early before the 9:30 open and on market holidays.
 
 ```bash
-aws iam create-role --role-name trading-bot-scheduler --assume-role-policy-document \
+aws iam create-role --role-name stratos-scheduler --assume-role-policy-document \
   '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"scheduler.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 
-LIVE_ARN=$(aws lambda get-function --function-name trading-bot-live-trader --query Configuration.FunctionArn --output text)
-aws iam put-role-policy --role-name trading-bot-scheduler --policy-name invoke-live-trader \
+LIVE_ARN=$(aws lambda get-function --function-name stratos-live-trader --query Configuration.FunctionArn --output text)
+aws iam put-role-policy --role-name stratos-scheduler --policy-name invoke-live-trader \
   --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"lambda:InvokeFunction\",\"Resource\":\"$LIVE_ARN\"}]}"
-SCHED_ROLE=$(aws iam get-role --role-name trading-bot-scheduler --query Role.Arn --output text)
+SCHED_ROLE=$(aws iam get-role --role-name stratos-scheduler --query Role.Arn --output text)
 
 # The Input passes the scheduled time into the function; a retried invocation gets the
 # same value, so its orders reuse the same client_order_id and Alpaca rejects the repeat.
@@ -224,7 +224,7 @@ cat > target.json <<EOF
 }
 EOF
 
-aws scheduler create-schedule --name trading-bot-every-5-min \
+aws scheduler create-schedule --name stratos-every-5-min \
   --schedule-expression "cron(0/5 9-15 ? * MON-FRI *)" \
   --schedule-expression-timezone "America/New_York" \
   --flexible-time-window '{"Mode":"OFF"}' \
@@ -258,7 +258,7 @@ To deploy it, the console is easiest the first time because it can create the tw
 roles for you:
 
 1. ECS console → **Express mode** → Create.
-2. Image URI: `<ACCOUNT>.dkr.ecr.us-east-1.amazonaws.com/trading-bot-dashboard:latest`
+2. Image URI: `<ACCOUNT>.dkr.ecr.us-east-1.amazonaws.com/stratos-dashboard:latest`
 3. Container port: `8080`. Health check path: `/_stcore/health`
    (the default `/ping` doesn't exist in Streamlit, so the load balancer would keep killing the task).
 4. Task execution role and infrastructure role: **Create new role** for each.
@@ -289,24 +289,24 @@ about 84 Lambda runs per trading day, plus a few MB of images in ECR. New AWS ac
 get a credit-based free plan (currently $100 at sign-up, up to $100 more, for 6 months);
 check **Billing → Free tier** and your budget alert rather than trusting any number here.
 
-To stop the database for a while without deleting it: `aws rds stop-db-instance --db-instance-identifier trading-bot-db`
+To stop the database for a while without deleting it: `aws rds stop-db-instance --db-instance-identifier stratos-db`
 (AWS restarts stopped instances automatically after 7 days).
 
 Delete everything:
 
 ```bash
-aws scheduler delete-schedule --name trading-bot-every-5-min
-aws lambda delete-function --function-name trading-bot-live-trader
-aws lambda delete-function --function-name trading-bot-backtester
+aws scheduler delete-schedule --name stratos-every-5-min
+aws lambda delete-function --function-name stratos-live-trader
+aws lambda delete-function --function-name stratos-backtester
 # ECS Express service: delete it in the ECS console (this also removes its load balancer)
-aws rds delete-db-instance --db-instance-identifier trading-bot-db --skip-final-snapshot
-aws rds wait db-instance-deleted --db-instance-identifier trading-bot-db
+aws rds delete-db-instance --db-instance-identifier stratos-db --skip-final-snapshot
+aws rds wait db-instance-deleted --db-instance-identifier stratos-db
 aws ec2 delete-security-group --group-id $DB_SG
-aws secretsmanager delete-secret --secret-id trading-bot/prod --force-delete-without-recovery
-for r in backtester live-trader dashboard; do aws ecr delete-repository --repository-name trading-bot-$r --force; done
-aws iam delete-role-policy --role-name trading-bot-scheduler --policy-name invoke-live-trader
-aws iam delete-role --role-name trading-bot-scheduler
-aws iam delete-role-policy --role-name trading-bot-lambda --policy-name read-trading-secret
-aws iam detach-role-policy --role-name trading-bot-lambda --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-aws iam delete-role --role-name trading-bot-lambda
+aws secretsmanager delete-secret --secret-id stratos/prod --force-delete-without-recovery
+for r in backtester live-trader dashboard; do aws ecr delete-repository --repository-name stratos-$r --force; done
+aws iam delete-role-policy --role-name stratos-scheduler --policy-name invoke-live-trader
+aws iam delete-role --role-name stratos-scheduler
+aws iam delete-role-policy --role-name stratos-lambda --policy-name read-trading-secret
+aws iam detach-role-policy --role-name stratos-lambda --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+aws iam delete-role --role-name stratos-lambda
 ```
