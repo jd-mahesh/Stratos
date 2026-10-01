@@ -1,0 +1,72 @@
+# Local stack: Postgres + the three services, wired the same way as on AWS.
+#
+#   docker compose up -d db dashboard                 # database + dashboard at http://localhost:8501
+#   docker compose run --rm backtester --provider synthetic
+#   docker compose run --rm live-trader --dry-run --force
+#
+# The backtester and live trader are one-shot jobs (profile "jobs"), so plain
+# `docker compose up` doesn't start them, just like on AWS where something
+# has to invoke them.
+
+x-app-env: &app-env
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DATABASE_URL: postgresql+psycopg2://trader:trader@db:5432/trading
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader
+      POSTGRES_DB: trading
+    ports:
+      - "5432:5432"  # so you can poke at it with psql or a GUI client
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d trading"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  backtester:
+    <<: *app-env
+    build:
+      context: .
+      dockerfile: docker/backtester.Dockerfile
+    image: trading-bot-backtester
+    entrypoint: ["python", "-m", "backtester"]
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["jobs"]
+
+  live-trader:
+    <<: *app-env
+    build:
+      context: .
+      dockerfile: docker/live_trader.Dockerfile
+    image: trading-bot-live-trader
+    entrypoint: ["python", "-m", "live_trader"]
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["jobs"]
+
+  dashboard:
+    <<: *app-env
+    build:
+      context: .
+      dockerfile: docker/dashboard.Dockerfile
+    image: trading-bot-dashboard
+    ports:
+      - "8501:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

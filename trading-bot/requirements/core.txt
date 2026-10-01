@@ -1,0 +1,6 @@
+# Shared by every service
+pandas>=2.0
+numpy>=1.24
+SQLAlchemy>=2.0,<3
+psycopg2-binary>=2.9
+boto3>=1.34

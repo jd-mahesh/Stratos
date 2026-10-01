@@ -1,0 +1,2 @@
+-r core.txt
+alpaca-py>=0.30

@@ -1,0 +1,4 @@
+-r backtester.txt
+-r live_trader.txt
+-r dashboard.txt
+pytest>=8

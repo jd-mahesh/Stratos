@@ -1,0 +1,25 @@
+# Dashboard image: a normal long-running web container (not Lambda).
+#
+# Build from the repo root:
+#   docker build -f docker/dashboard.Dockerfile -t trading-bot-dashboard .
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+WORKDIR /app
+
+COPY requirements/ requirements/
+RUN pip install -r requirements/dashboard.txt
+
+COPY trader_core/ trader_core/
+COPY dashboard/ dashboard/
+
+# Don't run as root inside the container.
+RUN useradd --create-home app
+USER app
+
+EXPOSE 8080
+# The load balancer checks /_stcore/health, Streamlit's built-in health endpoint.
+CMD ["streamlit", "run", "dashboard/app.py", \
+     "--server.port=8080", "--server.address=0.0.0.0", \
+     "--server.headless=true", "--browser.gatherUsageStats=false"]

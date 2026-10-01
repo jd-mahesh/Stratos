@@ -1,0 +1,39 @@
+  Momentum sweep on custom list (53 symbols), 2016-01-04 to 2026-09-30
+  Signals: live price · cash earns 1.5% · halves split at 2021-05-16
+  Buy & hold: +32.0%/yr overall, +26.6% first half, +33.1% second half (per year)
+
+  Lookback  Top  Per year  1st half  2nd half  Worst drop  Sharpe  Trades  Beats B&H in both halves
+  3 mo        1    +19.9%    +88.3%    -23.7%      -97.6%    0.64      82                        no
+  3 mo        2    +52.2%    +69.0%    +37.7%      -88.7%    0.98     166                       YES
+  3 mo        3    +60.6%    +57.0%    +65.4%      -55.7%    1.15     221                       YES
+  3 mo        5    +51.6%    +53.3%    +49.9%      -54.3%    1.17     318                       YES
+  6 mo        1    +53.1%    +43.5%    +60.0%      -85.4%    0.92      58                       YES
+  6 mo        2    +72.3%    +55.2%    +86.2%      -61.9%    1.18     110                       YES
+  6 mo        3    +83.0%    +63.3%   +101.1%      -52.6%    1.41     140                       YES
+  6 mo        5    +62.6%    +54.7%    +68.8%      -42.8%    1.32     220                       YES
+  12 mo       1    +25.8%    +50.2%     +5.9%      -90.4%    0.68      42                        no
+  12 mo       2    +38.2%    +62.8%    +17.7%      -75.2%    0.86      70                        no
+  12 mo       3    +49.5%    +62.3%    +36.3%      -65.5%    1.05      95                       YES
+  12 mo       5    +42.2%    +43.5%    +40.1%      -56.0%    1.05     172                       YES
+
+  9 of 12 settings beat buy & hold in both halves (buy & hold Sharpe 1.11).
+  Prefer a setting whose neighbours also pass: an isolated winner is more likely luck.
+  Momentum sweep on sectors (11 symbols), 2007-01-03 to 2026-09-30
+  Signals: live price · cash earns 1.5% · halves split at 2016-11-15
+  Buy & hold: +9.7%/yr overall, +6.6% first half, +12.5% second half (per year)
+
+  Lookback  Top  Per year  1st half  2nd half  Worst drop  Sharpe  Trades  Beats B&H in both halves
+  3 mo        1     +7.3%     +1.8%    +12.4%      -60.9%    0.43     133                        no
+  3 mo        2     +9.1%     +4.8%    +13.3%      -46.6%    0.59     221                        no
+  3 mo        3     +8.3%     +5.3%    +11.2%      -45.2%    0.58     275                        no
+  3 mo        5     +8.4%     +7.1%     +9.6%      -30.1%    0.67     340                        no
+  6 mo        1     +6.1%     +0.5%    +11.8%      -46.6%    0.38     111                        no
+  6 mo        2     +6.2%     +5.5%     +6.5%      -32.2%    0.42     176                        no
+  6 mo        3     +7.6%     +6.5%     +8.4%      -29.7%    0.52     208                        no
+  6 mo        5     +7.1%     +6.5%     +7.6%      -33.2%    0.53     250                        no
+  12 mo       1     +8.8%     +0.8%    +17.6%      -41.4%    0.49      83                        no
+  12 mo       2     +9.8%     +5.7%    +14.1%      -33.0%    0.59     123                        no
+  12 mo       3     +9.3%     +6.1%    +12.7%      -31.9%    0.60     156                        no
+  12 mo       5     +9.7%     +7.9%    +11.4%      -31.9%    0.67     170                        no
+
+  No setting beat buy & hold in both halves on this list.

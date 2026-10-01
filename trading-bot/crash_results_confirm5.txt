@@ -1,0 +1,116 @@
+INFO backtester: fetching yfinance bars for ['XLK', 'XLF', 'XLE', 'XLV', 'XLY', 'XLP', 'XLI', 'XLU', 'XLB', 'XLRE', 'XLC'] from 1999-06-01
+  Crash report: sectors (11 symbols), 1999-06-24 to 2026-09-30
+  Normal mode:  each month, hold the 5 symbols with the best 6-month return, only if that return is positive
+  Crash rule:   crash mode once QQQ has closed below its 200-day average and at least 10% below its 1-year high 5 days in a row, until it closes back above the average 5 days in a row (daily closes only)
+  Crash mode:   hold the best of BIL, IEF, TLT, GLD over the last 3 months, or BIL if none beat it
+  A crash here = the index falling 15% or more from a high.
+
+  Whole period        Without crash mode  With crash mode
+  Per year                         +6.8%            +6.3%
+  Total return                   +508.5%          +425.4%
+  Worst drop                      -33.2%           -32.2%
+  Sharpe                            0.53             0.48
+  Days in crash mode                   -            22.4%
+
+  Crash (peak to recovery)   Index  Loss without  Loss with  Recovery without  Recovery with           Crash mode: first on; stretches, trading days
+  2000-01-03 to 2000-01-19  -15.5%         -2.5%      -2.5%            7 days         7 days                                                   never
+  2000-03-27 to 2015-02-20  -83.0%        -16.6%     -15.9%         1162 days      1254 days  2000-05-26 (index -34.0%); 15 times, 1122 of 3749 days
+  2015-12-01 to 2016-07-27  -16.1%         -6.2%      -6.2%           94 days       223 days       2016-02-09 (index -16.1%); 1 time, 30 of 165 days
+  2018-08-29 to 2019-04-12  -22.8%        -17.2%     -11.4%          478 days       212 days       2018-11-26 (index -12.6%); 1 time, 59 of 156 days
+  2020-02-19 to 2020-06-03  -28.6%        -33.2%     -32.2%          355 days       289 days        2020-03-18 (index -25.5%); 1 time, 20 of 74 days
+  2021-12-27 to 2023-12-13  -35.1%        -19.0%     -16.8%          774 days       756 days      2022-01-27 (index -15.5%); 1 time, 258 of 495 days
+  2025-02-19 to 2025-06-24  -22.8%        -15.5%     -10.0%          222 days        56 days        2025-03-17 (index -10.5%); 1 time, 44 of 87 days
+
+  Every stretch in crash mode during each crash (on to last day, trading days):
+  2000-03-27 crash:
+    2000-05-26 to 2000-06-07 (8d), 2000-08-04 to 2000-08-18 (11d), 2000-09-18 to 2001-12-11 (308d)
+    2001-12-28 to 2002-01-09 (8d), 2002-01-24 to 2003-01-15 (247d), 2003-01-27 to 2003-03-19 (37d)
+    2004-08-10 to 2004-10-07 (42d), 2005-04-20 to 2005-05-23 (24d), 2006-06-12 to 2006-09-29 (78d)
+    2008-01-11 to 2008-05-14 (86d), 2008-06-27 to 2008-08-14 (34d), 2008-09-08 to 2009-05-06 (167d)
+    2010-07-07 to 2010-07-28 (16d), 2010-08-26 to 2010-09-10 (11d), 2011-08-15 to 2011-10-17 (45d)
+  2015-12-01 crash:
+    2016-02-09 to 2016-03-22 (30d)
+  2018-08-29 crash:
+    2018-11-26 to 2019-02-21 (59d)
+  2020-02-19 crash:
+    2020-03-18 to 2020-04-15 (20d)
+  2021-12-27 crash:
+    2022-01-27 to 2023-02-06 (258d)
+  2025-02-19 crash:
+    2025-03-17 to 2025-05-16 (44d)
+
+  No false alarms: crash mode only switched on during real crashes.
+INFO backtester: fetching yfinance bars for ['AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'NVDA', 'TSLA', 'ADBE', 'CRM', 'NFLX', 'INTC', 'CSCO', 'AVGO', 'QCOM', 'TXN', 'ORCL', 'AMD', 'MU', 'AMAT', 'LRCX', 'PYPL', 'NOW', 'INTU', 'IBM', 'ADI'] from 2007-01-01
+  Crash report: tech2020 (25 symbols), 2007-01-03 to 2026-09-30
+  Normal mode:  each month, hold the 5 symbols with the best 6-month return, only if that return is positive
+  Crash rule:   crash mode once QQQ has closed below its 200-day average and at least 10% below its 1-year high 5 days in a row, until it closes back above the average 5 days in a row (daily closes only)
+  Crash mode:   hold the best of BIL, IEF, TLT, GLD over the last 3 months, or BIL if none beat it
+  A crash here = the index falling 15% or more from a high.
+
+  Whole period        Without crash mode  With crash mode
+  Per year                        +40.2%           +36.6%
+  Total return                 +78293.7%        +46805.1%
+  Worst drop                      -48.5%           -44.7%
+  Sharpe                            1.20             1.17
+  Days in crash mode                   -            15.5%
+
+  Crash (peak to recovery)   Index  Loss without  Loss with  Recovery without  Recovery with        Crash mode: first on; stretches, trading days
+  2007-10-31 to 2010-12-08  -53.4%        -45.9%     -41.9%          791 days       784 days  2008-01-11 (index -14.4%); 5 times, 314 of 783 days
+  2011-07-26 to 2012-01-18  -16.1%        -21.2%     -21.7%          231 days       548 days     2011-08-15 (index -8.8%); 1 time, 45 of 122 days
+  2015-12-01 to 2016-07-27  -16.1%        -18.1%     -22.3%          108 days       203 days    2016-02-09 (index -16.1%); 1 time, 30 of 165 days
+  2018-08-29 to 2019-04-12  -22.8%        -29.5%     -21.6%          425 days       425 days    2018-11-26 (index -12.6%); 1 time, 59 of 156 days
+  2020-02-19 to 2020-06-03  -28.6%        -37.3%     -40.1%          112 days       152 days     2020-03-18 (index -25.5%); 1 time, 20 of 74 days
+  2021-12-27 to 2023-12-13  -35.1%        -43.4%     -22.2%          569 days       514 days   2022-01-27 (index -15.5%); 1 time, 258 of 495 days
+  2025-02-19 to 2025-06-24  -22.8%        -24.5%     -17.2%           97 days       125 days     2025-03-17 (index -10.5%); 1 time, 44 of 87 days
+
+  Every stretch in crash mode during each crash (on to last day, trading days):
+  2007-10-31 crash:
+    2008-01-11 to 2008-05-14 (86d), 2008-06-27 to 2008-08-14 (34d), 2008-09-08 to 2009-05-06 (167d)
+    2010-07-07 to 2010-07-28 (16d), 2010-08-26 to 2010-09-10 (11d)
+  2011-07-26 crash:
+    2011-08-15 to 2011-10-17 (45d)
+  2015-12-01 crash:
+    2016-02-09 to 2016-03-22 (30d)
+  2018-08-29 crash:
+    2018-11-26 to 2019-02-21 (59d)
+  2020-02-19 crash:
+    2020-03-18 to 2020-04-15 (20d)
+  2021-12-27 crash:
+    2022-01-27 to 2023-02-06 (258d)
+  2025-02-19 crash:
+    2025-03-17 to 2025-05-16 (44d)
+
+  No false alarms: crash mode only switched on during real crashes.
+INFO backtester: fetching yfinance bars for ['SPY', 'QQQ', 'GLD', 'TLT', 'UGLD', 'CEG', 'URA', 'PLTR', 'XOM', 'CVX', 'HAL', 'LMT', 'RTX', 'DELL', 'MSFT', 'AMZN', 'GOOG', 'ORCL', 'NBIS', 'LITE', 'WYFI', 'SNOW', 'NVDA', 'INTC', 'MRVL', 'SNDK', 'IONQ', 'QTUM', 'AMD', 'MU', 'NVTS', 'ALOY', 'AVGO', 'CRWD', 'PANW', 'HPE', 'XMAX', 'NOK', 'XE', 'CIFR', 'OSCR', 'LYFT', 'UBER', 'IREN', 'SOFI', 'RKLB', 'ZS', 'DIS', 'NFLX', 'TTWO', 'TSLA', 'AAPL', 'META'] from 2016-01-01
+  Crash report: custom list (53 symbols), 2016-01-04 to 2026-09-30
+  Normal mode:  each month, hold the 5 symbols with the best 6-month return, only if that return is positive
+  Crash rule:   crash mode once QQQ has closed below its 200-day average and at least 10% below its 1-year high 5 days in a row, until it closes back above the average 5 days in a row (daily closes only)
+  Crash mode:   hold the best of BIL, IEF, TLT, GLD over the last 3 months, or BIL if none beat it
+  A crash here = the index falling 15% or more from a high.
+
+  Whole period        Without crash mode  With crash mode
+  Per year                        +62.6%           +51.9%
+  Total return                 +18353.8%         +8833.0%
+  Worst drop                      -42.8%           -45.5%
+  Sharpe                            1.32             1.20
+  Days in crash mode                   -            15.2%
+
+  Crash (peak to recovery)   Index  Loss without  Loss with  Recovery without  Recovery with       Crash mode: first on; stretches, trading days
+  2018-08-29 to 2019-04-12  -22.8%        -28.0%     -20.1%          224 days       224 days   2018-11-26 (index -12.6%); 1 time, 59 of 156 days
+  2020-02-19 to 2020-06-03  -28.6%        -34.3%     -36.9%          100 days       138 days    2020-03-18 (index -25.5%); 1 time, 20 of 74 days
+  2021-12-27 to 2023-12-13  -35.1%        -30.4%     -33.6%          529 days       540 days  2022-01-27 (index -15.5%); 1 time, 258 of 495 days
+  2025-02-19 to 2025-06-24  -22.8%        -36.6%     -34.6%           92 days       110 days    2025-03-17 (index -10.5%); 1 time, 44 of 87 days
+
+  Every stretch in crash mode during each crash (on to last day, trading days):
+  2018-08-29 crash:
+    2018-11-26 to 2019-02-21 (59d)
+  2020-02-19 crash:
+    2020-03-18 to 2020-04-15 (20d)
+  2021-12-27 crash:
+    2022-01-27 to 2023-02-06 (258d)
+  2025-02-19 crash:
+    2025-03-17 to 2025-05-16 (44d)
+
+  False alarms: 1 times crash mode switched on with no 15% crash (combined effect on return -19.6 points):
+  Period                    Without   With  Effect
+  2016-02-09 to 2016-03-22   +16.4%  -3.2%  -19.6%
