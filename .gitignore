@@ -1,5 +1,9 @@
-/.DS_Store
-/.venv
-/.vscode
-/Practice
-/world-cup-predictor
+.env
+*.db
+secret.json
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.DS_Store
