@@ -1,6 +1,6 @@
 # Local stack: Postgres + the three services, wired the same way as on AWS.
 #
-#   docker compose up -d db dashboard                 # database + dashboard at http://localhost:8501
+#   docker compose up -d db dashboard                 # database + dashboard at http://localhost:8502
 #   docker compose run --rm backtester --provider synthetic
 #   docker compose run --rm live-trader --dry-run --force
 #
@@ -63,7 +63,7 @@ services:
       dockerfile: docker/dashboard.Dockerfile
     image: stratos-dashboard
     ports:
-      - "8501:8080"
+      - "8502:8080"
     depends_on:
       db:
         condition: service_healthy

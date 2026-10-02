@@ -250,9 +250,12 @@ but it's the part of the project most worth deleting when you're not using it.
 The zero-cost alternative is to run the dashboard on your laptop against RDS:
 
 ```bash
-docker compose run --rm -p 8501:8080 -e DATABASE_URL="$DATABASE_URL" dashboard
-# then open http://localhost:8501
+bash scripts/dashboard.sh
+# then open http://localhost:8502 (Ctrl+C to stop)
 ```
+
+The script reads `DATABASE_URL` from Secrets Manager without printing it and runs the
+dashboard image on `127.0.0.1` only, so other devices on your network can't reach it.
 
 To deploy it, the console is easiest the first time because it can create the two IAM
 roles for you:

@@ -49,7 +49,7 @@ pip install -r requirements/dev.txt
 
 pytest -q                                      # runs in about a second, no network needed
 python -m backtester --provider synthetic      # backtest on fake prices, saved to trading.db
-streamlit run dashboard/app.py                 # open http://localhost:8501
+streamlit run dashboard/app.py --server.port 8502  # open http://localhost:8502
 ```
 
 `--provider synthetic` generates random-walk prices so you can run everything offline.
@@ -85,7 +85,7 @@ The dashboard flags those runs so they can't be mistaken for real results.
 ## With Docker (the same way it runs on AWS)
 
 ```bash
-docker compose up -d db dashboard                        # Postgres + dashboard on :8501
+docker compose up -d db dashboard                        # Postgres + dashboard on :8502
 docker compose run --rm backtester --provider synthetic  # one-shot jobs
 docker compose run --rm live-trader --dry-run --force
 docker compose down                                      # add -v to wipe the database

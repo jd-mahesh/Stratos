@@ -14,6 +14,10 @@ RUN pip install -r requirements/dashboard.txt
 COPY trader_core/ trader_core/
 COPY dashboard/ dashboard/
 
+# Make the code readable (not writable) by the non-root user below, whatever
+# permissions the files had where the image was built.
+RUN chmod -R a+rX /app/trader_core /app/dashboard
+
 # Don't run as root inside the container.
 RUN useradd --create-home app
 USER app
