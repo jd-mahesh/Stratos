@@ -176,3 +176,50 @@ def test_stop_setting_validation_and_params():
     for bad in (-1, 100):
         with pytest.raises(ValueError, match="stop"):
             Momentum(stop=bad)
+
+
+# --- take profits (momentum --take, backtester only) --------------------------
+
+def _take_prices():
+    """A climbs gently through January, then jumps 40% in mid-February and stays there (data ends Feb 28)."""
+    a = list(np.linspace(100, 110, 32)) + [154.0] * 11
+    b = list(np.linspace(100, 104, 43))
+    return {"A": make_bars(a, start="2024-01-01"), "B": make_bars(b, start="2024-01-01")}
+
+
+def _take_run(take, mode="intraday"):
+    from trader_core.strategy import Momentum
+
+    return run_backtest(_take_prices(), Momentum(lookback=20, top=1, take=take), initial_capital=10_000,
+                        slippage_bps=0, fractional=True, signal_mode=mode)
+
+
+def test_take_profit_trims_back_to_target_mid_month():
+    result = _take_run(30)
+    a = next(t for t in result.trades if t.symbol == "A")
+    assert result.metrics["take_trims"] == 1  # the 40% jump crosses the 30% line once
+    assert 0 < a.sold < a.bought  # trimmed, not sold out
+    # back to its Feb 1 target value: the shares kept are worth at $154 what they were worth at ~$107
+    assert (a.bought - a.sold) / a.bought == pytest.approx(107.4 / 154, abs=0.03)
+
+
+def test_take_profit_off_or_not_reached_leaves_the_position_alone():
+    for take in (0, 50):  # off, or a 50% bar the 40% jump never reaches
+        result = _take_run(take)
+        a = next(t for t in result.trades if t.symbol == "A")
+        assert a.sold == 0 or pd.Timestamp(a.exit_ts) >= pd.Timestamp("2024-03-01")
+        assert result.metrics.get("take_trims", 0) == 0
+
+
+def test_take_profit_in_close_mode_trims_at_the_next_open():
+    assert _take_run(30, "close").metrics["take_trims"] == 1
+
+
+def test_take_setting_validation_and_params():
+    from trader_core.strategy import Momentum
+
+    assert "take" not in Momentum().params()
+    assert Momentum(take=30).params()["take"] == 30
+    for bad in (-1, 1001):
+        with pytest.raises(ValueError, match="take"):
+            Momentum(take=bad)

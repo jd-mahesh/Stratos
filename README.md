@@ -237,7 +237,23 @@ python -m backtester --strategy momentum --sweep --universe sectors --provider y
 ```
 
 Pass bar, set before running: a stop level must raise the Sharpe ratio without deepening the
-worst drop on the sector list and on at least one other list.
+worst drop on the sector list and on at least one other list. **Result (Oct 2026): rejected.**
+With the live settings (6-month lookback, top 5, volatility scaling), no stop level from 10%
+to 25% passed on any list. Stops mostly sold after the drop had happened, the stock often
+recovered before the next rebalance bought it back, and returns fell by 1 to 16 points a year
+(sector list: Sharpe 0.59 with no stop, 0.44 to 0.58 with one).
+
+**Take profits (experiment).** Each rebalance sizes every position to a target value. Between
+rebalances, `--take N` trims a position back to that target once it has grown N% above it,
+and the proceeds wait in cash until the next rebalance. Backtester only until it passes:
+
+```bash
+python -m backtester --strategy momentum --sweep --universe sectors --provider yfinance \
+  --start 1999-06-01 --lookbacks 126 --tops 5 --vol-scale 21 --take 0,20,30,50
+```
+
+Same pass bar as the stop: a higher Sharpe without a deeper worst drop, on the sector list
+and at least one other list.
 
 ### Adding a strategy
 

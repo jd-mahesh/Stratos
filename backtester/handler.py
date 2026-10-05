@@ -16,7 +16,7 @@ logging.getLogger().setLevel(logging.INFO)
 
 ALLOWED = {"symbols", "start", "end", "fast", "slow", "capital", "provider", "slippage_bps", "save", "fractional",
            "strategy", "window", "lookback", "top", "signal_mode", "cash_rate", "crash_switch",
-           "crash_confirm", "stop"}
+           "crash_confirm", "stop", "take"}
 
 
 def handler(event, context):

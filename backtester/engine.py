@@ -32,6 +32,13 @@ position is sold (at that close in intraday mode, at the next open in close
 mode) and the money stays in cash until the next rebalance, which may buy the
 stock again if it still ranks. The live bot checks every few minutes; daily
 closes are the closest a daily backtest can get.
+
+Take profits (momentum ``take``, backtester only): each rebalance sets every
+position's target value (weight x account value). Between rebalances, a
+position whose value closes ``take`` percent or more above its target is
+trimmed back to the target, at the same times a stop would sell. The proceeds
+stay in cash until the next rebalance; if it climbs another ``take`` percent,
+it's trimmed again.
 """
 from __future__ import annotations
 
@@ -43,7 +50,7 @@ import numpy as np
 import pandas as pd
 
 from trader_core.data import PriceData
-from trader_core.portfolio import DEFAULT_BAND, plan_buys, plan_sells
+from trader_core.portfolio import DEFAULT_BAND, plan_buys, plan_sells, share_quantity
 from trader_core.strategy import Signal, Strategy
 
 from .metrics import compute_metrics, same_exposure, yearly_returns
@@ -196,9 +203,13 @@ def run_backtest(
     def frac(_symbol: str) -> bool:
         return fractional
 
-    stop_pct = float(getattr(getattr(strategy, "normal", strategy), "stop", 0) or 0) / 100
+    inner = getattr(strategy, "normal", strategy)
+    stop_pct = float(getattr(inner, "stop", 0) or 0) / 100
+    take_pct = float(getattr(inner, "take", 0) or 0) / 100
     peak: Dict[str, float] = {}  # highest price since each position was opened (trailing stop)
+    target_value: Dict[str, float] = {}  # dollars each position was sized to at the last rebalance (take profits)
     stop_exits = 0
+    take_trims = 0
 
     def sell(day: date, s: str, qty: float, price: float) -> None:
         """Sell ``qty`` of ``s`` at ``price`` (before slippage) and close its trade if that's all of it."""
@@ -227,6 +238,9 @@ def run_backtest(
         marks = {s: tradable.get(s, closes[s][max(i - 1, 0)]) for s in traded}
         equity_now = cash + sum(shares[s] * marks[s] for s in traded if shares[s] > EPS)
         held = {s: shares[s] for s in traded if shares[s] > EPS}
+        for s, sig in live.items():
+            if sig.weight is not None:
+                target_value[s] = sig.weight * equity_now
 
         for order in plan_sells(live, held, tradable, equity_now, True, strategy.resize, frac, band):
             sell(day, order.symbol, order.qty, tradable[order.symbol])
@@ -256,6 +270,16 @@ def run_backtest(
             if price <= peak[s] * (1 - stop_pct):
                 hit.append(s)
         return hit
+
+    def take_amount(s: str, price: float) -> float:
+        """Shares to sell to bring ``s`` back to its target value, if it's ``take`` above it (else 0)."""
+        target = target_value.get(s, 0.0)
+        if take_pct <= 0 or shares[s] <= EPS or target <= 0 or not np.isfinite(price):
+            return 0.0
+        value = shares[s] * price
+        if value < target * (1 + take_pct):
+            return 0.0
+        return min(share_quantity(value - target, price, fractional), shares[s])
 
     def extra_history(i: int, at_open: bool) -> Dict[str, np.ndarray]:
         """Watched prices up to now: through day i's close, or through yesterday plus today's open."""
@@ -308,6 +332,7 @@ def run_backtest(
     rows = []
     pending: Optional[Dict[str, Signal]] = None
     stop_pending: List[str] = []  # close mode: stops triggered at yesterday's close, sold at today's open
+    take_pending: List[str] = []  # close mode: trims triggered at yesterday's close, sold at today's open
     for i in range(first, n):
         if cash > 0 and i > first:  # a day's interest on idle cash
             cash *= 1 + daily_rate
@@ -322,6 +347,14 @@ def run_backtest(
                     sell(day, s, shares[s], float(open_px[s]))
                     stop_exits += 1
             stop_pending = [s for s in stop_pending if shares[s] > EPS]  # couldn't trade today: retry tomorrow
+        if take_pending:
+            day = dates[i].date()
+            for s in take_pending:
+                qty = take_amount(s, float(open_px[s]))
+                if qty > 0:
+                    sell(day, s, qty, float(open_px[s]))
+                    take_trims += 1
+            take_pending = []
 
         if signal_mode == "close":
             if pending is not None:  # decided at yesterday's close, filled at today's open
@@ -347,6 +380,18 @@ def run_backtest(
                     stop_exits += 1
             else:
                 stop_pending = sorted(set(stop_pending) | set(hit))
+        if take_pct > 0:
+            for s in universe:
+                if s in stop_pending or not np.isfinite(opens[s][i]):
+                    continue
+                qty = take_amount(s, float(closes[s][i]))
+                if qty <= 0:
+                    continue
+                if signal_mode == "intraday":
+                    sell(dates[i].date(), s, qty, float(closes[s][i]))
+                    take_trims += 1
+                else:
+                    take_pending.append(s)
 
         invested = sum(shares[s] * closes[s][i] for s in traded if shares[s] > EPS)
         in_universe = sum(shares[s] * closes[s][i] for s in universe if shares[s] > EPS)
@@ -372,4 +417,6 @@ def run_backtest(
         metrics["crash_days"] = float((equity_df["mode"] == "crash").mean())
     if stop_pct > 0:
         metrics["stop_exits"] = stop_exits
+    if take_pct > 0:
+        metrics["take_trims"] = take_trims
     return BacktestResult(equity_df, trades, metrics, initial_capital, universe)

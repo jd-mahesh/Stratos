@@ -25,6 +25,9 @@ were more volatile than their last year (0 = off), e.g. --vol-scale 0,21,63.
 --stop compares trailing stops: between rebalances, sell a stock that closes N% below its
 high since it was bought (0 = off), e.g. --stop 0,10,15,20,25.
 
+--take compares taking profits: between rebalances, trim a stock back to its target value
+once it's N% above it (0 = off), e.g. --take 0,20,30,50.
+
 Pick the grid before looking at the results, and keep it small.
 """
 from __future__ import annotations
@@ -101,6 +104,7 @@ def sweep(
     skips: Sequence[int] = (0,),
     vols: Sequence[int] = (0,),
     stops: Sequence[int] = (0,),
+    takes: Sequence[int] = (0,),
 ) -> Dict:
     """Run the grid. With ``normal_only``, every return is measured on normal-market
     days only, as judged by the crash detector (CRASH_INDEX etc.), so crashes don't
@@ -142,12 +146,12 @@ def sweep(
                   signal_mode=signal_mode, cash_rate=cash_rate)
 
     rows = []
-    grid = [(lookback, top, every, skip, vol, stop)
+    grid = [(lookback, top, every, skip, vol, stop, take)
             for every in everys for lookback in lookbacks for skip in skips for vol in vols for stop in stops
-            for top in tops]
-    for lookback, top, every, skip, vol, stop in grid:
+            for take in takes for top in tops]
+    for lookback, top, every, skip, vol, stop, take in grid:
         strat = make_strategy(settings, "momentum", lookback=lookback, top=top, every=every, skip=skip,
-                              vol_short=vol, stop=stop, crash_switch=False)
+                              vol_short=vol, stop=stop, take=take, crash_switch=False)
         full = run_backtest(prices, strat, settings.initial_capital, start=start_d, **common)
         eq, bh = full.equity["equity"], full.equity["benchmark_equity"]
         if normal_only:
@@ -176,6 +180,7 @@ def sweep(
             "skip": skip,
             "vol_scale": vol,
             "stop": stop,
+            "take": take,
             "cagr": cagr,
             "benchmark_cagr": bench,
             "first_half": parts[0][0],
@@ -227,13 +232,14 @@ def print_sweep(s: Dict) -> None:
     print(f"  Buy & hold: {_pct(r0['benchmark_cagr'])}/yr overall, {_pct(r0['first_half_benchmark'])} first half, "
           f"{_pct(r0['second_half_benchmark'])} second half (per year)")
     print()
-    header = ("Rebalance", "Lookback", "Skip", "Vol scale", "Stop", "Top", "Per year", "1st half", "2nd half",
+    header = ("Rebalance", "Lookback", "Skip", "Vol scale", "Stop", "Take", "Top", "Per year", "1st half", "2nd half",
               "Worst drop", "Sharpe", "Trades", "Beats B&H in both halves")
     table = [header]
     for r in rows:
         table.append((
             every_label(r.get("every", 0)), f"{round(r['lookback'] / 21)} mo", skip_label(r.get("skip", 0)),
-            vol_label(r.get("vol_scale", 0)), f"{r['stop']}%" if r.get("stop") else "off", str(r["top"]),
+            vol_label(r.get("vol_scale", 0)), f"{r['stop']}%" if r.get("stop") else "off",
+            f"{r['take']}%" if r.get("take") else "off", str(r["top"]),
             _pct(r["cagr"]),
             _pct(r["first_half"]),
             _pct(r["second_half"]), _pct(r["max_drawdown"]),
