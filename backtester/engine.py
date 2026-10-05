@@ -39,10 +39,16 @@ position whose value closes ``take`` percent or more above its target is
 trimmed back to the target, at the same times a stop would sell. The proceeds
 stay in cash until the next rebalance; if it climbs another ``take`` percent,
 it's trimmed again.
+
+Buy the dip (momentum ``dip``, backtester only): each rebalance invests only
+80% of what the strategy asks for, keeping DIP_CASH (20%) in cash. Between
+rebalances, a position whose value closes ``dip`` percent or more below its
+target is topped back up to the target from that cash, as long as cash lasts.
+If it keeps falling, it's topped up again (averaging down).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Dict, List, Optional
 
@@ -56,6 +62,7 @@ from trader_core.strategy import Signal, Strategy
 from .metrics import compute_metrics, same_exposure, yearly_returns
 
 EPS = 1e-9
+DIP_CASH = 0.20  # share of the account kept in cash for dip buys when momentum ``dip`` is on
 
 
 @dataclass
@@ -206,6 +213,8 @@ def run_backtest(
     inner = getattr(strategy, "normal", strategy)
     stop_pct = float(getattr(inner, "stop", 0) or 0) / 100
     take_pct = float(getattr(inner, "take", 0) or 0) / 100
+    dip_pct = float(getattr(inner, "dip", 0) or 0) / 100
+    dip_buys = 0
     peak: Dict[str, float] = {}  # highest price since each position was opened (trailing stop)
     target_value: Dict[str, float] = {}  # dollars each position was sized to at the last rebalance (take profits)
     stop_exits = 0
@@ -238,6 +247,9 @@ def run_backtest(
         marks = {s: tradable.get(s, closes[s][max(i - 1, 0)]) for s in traded}
         equity_now = cash + sum(shares[s] * marks[s] for s in traded if shares[s] > EPS)
         held = {s: shares[s] for s in traded if shares[s] > EPS}
+        if dip_pct > 0:  # invest 80% of each target, keep the rest in cash for dips
+            live = {s: replace(sig, weight=sig.weight * (1 - DIP_CASH)) if sig.weight else sig
+                    for s, sig in live.items()}
         for s, sig in live.items():
             if sig.weight is not None:
                 target_value[s] = sig.weight * equity_now
@@ -249,15 +261,30 @@ def run_backtest(
         buy_px = {s: p * (1 + slip) for s, p in tradable.items()}
         orders, _ = plan_buys(live, held, buy_px, equity_now, cash - commission, True, strategy.resize, frac, band)
         for order in orders:
-            s, fill = order.symbol, buy_px[order.symbol]
-            cash -= order.qty * fill + commission
-            if episode[s] is None:
-                episode[s] = Trade(s, day)
-                trades.append(episode[s])
-            episode[s].cost += order.qty * fill + commission
-            episode[s].bought += order.qty
-            shares[s] += order.qty
-            peak[s] = max(peak.get(s, 0.0), tradable[s])
+            buy(day, order.symbol, order.qty, tradable[order.symbol])
+
+    def buy(day: date, s: str, qty: float, price: float) -> None:
+        """Buy ``qty`` of ``s`` at ``price`` (before slippage), opening a trade if it's a new position."""
+        nonlocal cash
+        fill = price * (1 + slip)
+        cash -= qty * fill + commission
+        if episode[s] is None:
+            episode[s] = Trade(s, day)
+            trades.append(episode[s])
+        episode[s].cost += qty * fill + commission
+        episode[s].bought += qty
+        shares[s] += qty
+        peak[s] = max(peak.get(s, 0.0), price)
+
+    def dip_amount(s: str, price: float) -> float:
+        """Shares to buy to bring ``s`` back up to its target, if it's ``dip`` below it (else 0)."""
+        target = target_value.get(s, 0.0)
+        if dip_pct <= 0 or shares[s] <= EPS or target <= 0 or not np.isfinite(price):
+            return 0.0
+        value = shares[s] * price
+        if value > target * (1 - dip_pct):
+            return 0.0
+        return share_quantity(min(target - value, cash - commission), price * (1 + slip), fractional)
 
     def stops_hit(i: int) -> List[str]:
         """Held stocks whose close today is ``stop`` or more below their high since entry."""
@@ -333,6 +360,7 @@ def run_backtest(
     pending: Optional[Dict[str, Signal]] = None
     stop_pending: List[str] = []  # close mode: stops triggered at yesterday's close, sold at today's open
     take_pending: List[str] = []  # close mode: trims triggered at yesterday's close, sold at today's open
+    dip_pending: List[str] = []  # close mode: dip buys triggered at yesterday's close, bought at today's open
     for i in range(first, n):
         if cash > 0 and i > first:  # a day's interest on idle cash
             cash *= 1 + daily_rate
@@ -355,6 +383,14 @@ def run_backtest(
                     sell(day, s, qty, float(open_px[s]))
                     take_trims += 1
             take_pending = []
+        if dip_pending:
+            day = dates[i].date()
+            for s in dip_pending:
+                qty = dip_amount(s, float(open_px[s]))
+                if qty > 0:
+                    buy(day, s, qty, float(open_px[s]))
+                    dip_buys += 1
+            dip_pending = []
 
         if signal_mode == "close":
             if pending is not None:  # decided at yesterday's close, filled at today's open
@@ -392,6 +428,18 @@ def run_backtest(
                     take_trims += 1
                 else:
                     take_pending.append(s)
+        if dip_pct > 0:
+            for s in universe:
+                if s in stop_pending or not np.isfinite(opens[s][i]):
+                    continue
+                qty = dip_amount(s, float(closes[s][i]))
+                if qty <= 0:
+                    continue
+                if signal_mode == "intraday":
+                    buy(dates[i].date(), s, qty, float(closes[s][i]))
+                    dip_buys += 1
+                else:
+                    dip_pending.append(s)
 
         invested = sum(shares[s] * closes[s][i] for s in traded if shares[s] > EPS)
         in_universe = sum(shares[s] * closes[s][i] for s in universe if shares[s] > EPS)
@@ -419,4 +467,6 @@ def run_backtest(
         metrics["stop_exits"] = stop_exits
     if take_pct > 0:
         metrics["take_trims"] = take_trims
+    if dip_pct > 0:
+        metrics["dip_buys"] = dip_buys
     return BacktestResult(equity_df, trades, metrics, initial_capital, universe)

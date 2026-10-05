@@ -253,7 +253,21 @@ python -m backtester --strategy momentum --sweep --universe sectors --provider y
 ```
 
 Same pass bar as the stop: a higher Sharpe without a deeper worst drop, on the sector list
-and at least one other list.
+and at least one other list. **Result (Oct 2026): not adopted.** It barely changed anything:
+on the sector list a 30% or 50% bar never triggered and 20% cost 0.1%/yr at the same Sharpe
+(0.59). On the watchlist a 50% bar nudged the Sharpe from 1.41 to 1.43 but gave up about a
+point a year, and that list was picked with hindsight.
+
+**Buy the dip (experiment).** `--dip N` keeps 20% of the account in cash at each rebalance and,
+between rebalances, tops a position back up to its target once it's N% below it, again and
+again while it keeps falling and the cash lasts (averaging down). Because averaging down is how
+small accounts get hurt, it has a stricter bar: a higher Sharpe without a deeper worst drop on
+all three lists, compared with today's fully invested strategy.
+
+```bash
+python -m backtester --strategy momentum --sweep --universe sectors --provider yfinance \
+  --start 1999-06-01 --lookbacks 126 --tops 5 --vol-scale 21 --dip 0,10,15,20
+```
 
 ### Adding a strategy
 

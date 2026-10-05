@@ -215,6 +215,9 @@ class Momentum(Strategy):
     # Take profits (backtester only): between rebalances, trim a position back to its target value
     # once it has grown this many percent above it (0 = off).
     take: int = 0
+    # Buy the dip (backtester only): keep DIP_CASH of the account in cash at each rebalance, and
+    # between rebalances top a position back up to its target once it's this many percent below it.
+    dip: int = 0
 
     name = "momentum"
     resize = True
@@ -232,6 +235,8 @@ class Momentum(Strategy):
             raise ValueError("stop must be 0 (off) or a percent between 1 and 99")
         if not 0 <= self.take <= 1000:
             raise ValueError("take must be 0 (off) or a percent between 1 and 1000")
+        if not 0 <= self.dip < 100:
+            raise ValueError("dip must be 0 (off) or a percent between 1 and 99")
 
     @property
     def rebalance(self) -> str:  # type: ignore[override]
@@ -241,7 +246,7 @@ class Momentum(Strategy):
         # "every" is left out when monthly, so existing runs and the live trader's
         # rebalance bookkeeping (keyed on these params) are unchanged
         out = asdict(self)
-        for key in ("every", "skip", "vol_short", "stop", "take"):  # left out at their defaults (see above)
+        for key in ("every", "skip", "vol_short", "stop", "take", "dip"):  # left out at their defaults (see above)
             if not out[key]:
                 out.pop(key)
         if not self.vol_short:
@@ -294,8 +299,10 @@ class Momentum(Strategy):
                 if self.stop else "")
         take = (f"; between rebalances, trim a stock back to its target once it's {self.take}% above it"
                 if self.take else "")
+        dip = (f"; keep 20% in cash and top a stock back up to its target once it's {self.dip}% below it"
+               if self.dip else "")
         return (f"{when}, hold the {self.top} symbols with the best {self._period()} return"
-                f"{rule}{scaling}{stop}{take}")
+                f"{rule}{scaling}{stop}{take}{dip}")
 
     def decide(self, history: History, slots: Optional[int] = None, extra: Optional[History] = None,
                mode: Optional[str] = None) -> Dict[str, Signal]:

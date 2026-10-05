@@ -223,3 +223,47 @@ def test_take_setting_validation_and_params():
     for bad in (-1, 1001):
         with pytest.raises(ValueError, match="take"):
             Momentum(take=bad)
+
+
+# --- buy the dip (momentum --dip, backtester only) ----------------------------
+
+def _dip_prices():
+    """A climbs through January, drops 25% in mid-February and stays down (data ends Feb 28)."""
+    a = list(np.linspace(100, 110, 32)) + [80.0] * 11
+    b = list(np.linspace(100, 104, 43))
+    return {"A": make_bars(a, start="2024-01-01"), "B": make_bars(b, start="2024-01-01")}
+
+
+def _dip_run(dip, mode="intraday"):
+    from trader_core.strategy import Momentum
+
+    return run_backtest(_dip_prices(), Momentum(lookback=20, top=1, dip=dip), initial_capital=10_000,
+                        slippage_bps=0, fractional=True, signal_mode=mode)
+
+
+def test_dip_keeps_20_percent_cash_then_tops_up_after_a_drop():
+    without, with_dip = _dip_run(0), _dip_run(15)
+    first = with_dip.equity.index[0]
+    assert with_dip.equity.loc[first, "exposure"] == pytest.approx(0.8, abs=0.01)  # 20% held back
+    assert without.equity.loc[first, "exposure"] == pytest.approx(1.0, abs=0.01)
+    assert with_dip.metrics["dip_buys"] == 1  # the 25% drop crosses the 15% line once
+    assert with_dip.equity["exposure"].iloc[-1] > 0.8  # the dip buy used some of the cash
+
+
+def test_dip_does_nothing_when_off_or_the_drop_is_smaller():
+    assert "dip_buys" not in _dip_run(0).metrics
+    assert _dip_run(30).metrics["dip_buys"] == 0  # a 25% drop doesn't reach a 30% bar
+
+
+def test_dip_in_close_mode_buys_at_the_next_open():
+    assert _dip_run(15, "close").metrics["dip_buys"] == 1
+
+
+def test_dip_setting_validation_and_params():
+    from trader_core.strategy import Momentum
+
+    assert "dip" not in Momentum().params()
+    assert Momentum(dip=10).params()["dip"] == 10
+    for bad in (-1, 100):
+        with pytest.raises(ValueError, match="dip"):
+            Momentum(dip=bad)

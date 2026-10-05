@@ -163,12 +163,13 @@ def run(
     vol_scale: Optional[int] = None,
     stop: Optional[int] = None,
     take: Optional[int] = None,
+    dip: Optional[int] = None,
 ) -> Dict:
     universe = describe(symbols) if symbols else settings.universe
     symbols = expand(symbols) if symbols else settings.symbols
     strategy = make_strategy(settings, strategy, fast=fast, slow=slow, window=window, lookback=lookback, top=top,
                              crash_switch=crash_switch, crash_confirm=crash_confirm, every=every, skip=skip,
-                             vol_short=vol_scale, stop=stop, take=take)
+                             vol_short=vol_scale, stop=stop, take=take, dip=dip)
     if every and strategy.rebalance != "every":
         raise ValueError(f"--every only applies to momentum, not {strategy.name}")
     if skip and not getattr(strategy, "skip", 0) and not getattr(getattr(strategy, "normal", None), "skip", 0):
@@ -180,6 +181,8 @@ def run(
         raise ValueError(f"--stop only applies to momentum, not {strategy.name}")
     if take and not getattr(inner, "take", 0):
         raise ValueError(f"--take only applies to momentum, not {strategy.name}")
+    if dip and not getattr(inner, "dip", 0):
+        raise ValueError(f"--dip only applies to momentum, not {strategy.name}")
     signal_mode = (signal_mode or settings.signal_mode).lower()
     cash_rate = settings.cash_rate if cash_rate is None else cash_rate
     provider_name = (provider or settings.data_provider).lower()
@@ -336,6 +339,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--take", metavar="PCT",
                         help="momentum: between rebalances, trim a stock back to its target once it's PCT%% above "
                              "it (0 = off). In a sweep, a list such as 0,20,30,50")
+    parser.add_argument("--dip", metavar="PCT",
+                        help="momentum: keep 20%% in cash and, between rebalances, top a stock back up to its target "
+                             "once it's PCT%% below it (0 = off). In a sweep, a list such as 0,10,15,20")
     parser.add_argument("--lookbacks", metavar="DAYS",
                         help="sweep: comma-separated lookbacks in trading days (default 63,126,252)")
     parser.add_argument("--tops", metavar="N",
@@ -370,6 +376,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         vols = _int_list(args.vol_scale)
         stops = _int_list(args.stop)
         takes = _int_list(args.take)
+        dips = _int_list(args.dip)
         lookbacks = _int_list(args.lookbacks)
         tops = _int_list(args.tops)
     except ValueError as exc:
@@ -404,8 +411,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser.error("--take takes a single value outside --sweep")
     if takes and any(takes) and (args.strategy or Settings.from_env().strategy) != "momentum":
         parser.error("--take only applies to --strategy momentum")
-    if args.crash_report and (everys or skips or vols or stops or takes):
-        parser.error("--every, --skip, --vol-scale, --stop and --take aren't supported with --crash-report yet")
+    if dips and any(x < 0 or x >= 100 for x in dips):
+        parser.error("--dip must be 0 (off) or a percent between 1 and 99")
+    if not args.sweep and dips and len(dips) > 1:
+        parser.error("--dip takes a single value outside --sweep")
+    if dips and any(dips) and (args.strategy or Settings.from_env().strategy) != "momentum":
+        parser.error("--dip only applies to --strategy momentum")
+    if args.crash_report and (everys or skips or vols or stops or takes or dips):
+        parser.error("--every, --skip, --vol-scale, --stop, --take and --dip aren't supported with --crash-report yet")
     if skips and any(skips) and (args.strategy or Settings.from_env().strategy) != "momentum":
         parser.error("--skip only applies to --strategy momentum")
     if skips and any(skips):
@@ -448,6 +461,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                        vols=vols or (0,),
                        stops=stops or (0,),
                        takes=takes or (0,),
+                       dips=dips or (0,),
                        **({"lookbacks": lookbacks} if lookbacks else {}),
                        **({"tops": tops} if tops else {}),
                        cash_rate=None if args.cash_rate is None else args.cash_rate / 100,
@@ -482,6 +496,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         vol_scale=vols[0] if vols else None,
         stop=stops[0] if stops else None,
         take=takes[0] if takes else None,
+        dip=dips[0] if dips else None,
     )
     if args.json:
         print(json.dumps(summary, indent=2, default=str))
