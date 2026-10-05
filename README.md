@@ -269,6 +269,13 @@ python -m backtester --strategy momentum --sweep --universe sectors --provider y
   --start 1999-06-01 --lookbacks 126 --tops 5 --vol-scale 21 --dip 0,10,15,20
 ```
 
+**Result (Oct 2026): not adopted.** The worst drop shrank on every list (sector list −24.0% to
+about −20%, tech2020 −41.9% to about −35%, watchlist −39.2% to about −34%), but so did the
+return, by roughly the 20% kept in cash, and the Sharpe ratio didn't move on the sector list
+(0.59) or tech2020 (1.29). Nearly all of the effect came from holding 20% less stock, not from
+the dip buys: no sign that dips bounced back enough to profit from. Volatility scaling already
+holds less stock when it matters, only when markets get choppy.
+
 ### Adding a strategy
 
 Everything else (backtester, live trader, dashboard) works with any strategy, so a new one
