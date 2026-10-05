@@ -209,6 +209,9 @@ class Momentum(Strategy):
     # volatile than usual. vol_short = days of "recent" volatility (0 = off), vol_long = days of "normal".
     vol_short: int = 0
     vol_long: int = 252
+    # Trailing stop (backtester only, see engine.py): between rebalances, sell a position whose
+    # close falls this many percent below its highest close since it was bought (0 = off).
+    stop: int = 0
 
     name = "momentum"
     resize = True
@@ -222,6 +225,8 @@ class Momentum(Strategy):
             raise ValueError("skip must be 0 or a number of trading days well inside the lookback")
         if self.vol_short < 0 or (self.vol_short and not 2 <= self.vol_short < self.vol_long):
             raise ValueError("vol_short must be 0 (off) or at least 2 days and shorter than vol_long")
+        if not 0 <= self.stop < 100:
+            raise ValueError("stop must be 0 (off) or a percent between 1 and 99")
 
     @property
     def rebalance(self) -> str:  # type: ignore[override]
@@ -231,7 +236,7 @@ class Momentum(Strategy):
         # "every" is left out when monthly, so existing runs and the live trader's
         # rebalance bookkeeping (keyed on these params) are unchanged
         out = asdict(self)
-        for key in ("every", "skip", "vol_short"):  # left out at their defaults (see above)
+        for key in ("every", "skip", "vol_short", "stop"):  # left out at their defaults (see above)
             if not out[key]:
                 out.pop(key)
         if not self.vol_short:
@@ -280,7 +285,9 @@ class Momentum(Strategy):
         when = f"every {self.every} trading days" if self.every else "each month"
         scaling = (f"; invest less when their last {self.vol_short} days were more volatile than their last "
                    f"{self.vol_long}" if self.vol_short else "")
-        return f"{when}, hold the {self.top} symbols with the best {self._period()} return{rule}{scaling}"
+        stop = (f"; between rebalances, sell a stock that falls {self.stop}% below its high since we bought it"
+                if self.stop else "")
+        return f"{when}, hold the {self.top} symbols with the best {self._period()} return{rule}{scaling}{stop}"
 
     def decide(self, history: History, slots: Optional[int] = None, extra: Optional[History] = None,
                mode: Optional[str] = None) -> Dict[str, Signal]:

@@ -226,6 +226,19 @@ at about the same return. It's checked at each monthly rebalance, so a crash tha
 starts mid-month isn't caught until the next one. Turning it on (or changing it) counts
 as a new strategy setting, so the next run rebalances right away.
 
+**Trailing stop (experiment).** Between rebalances, `--stop N` sells a stock that closes N%
+below its highest close since it was bought; the money waits in cash until the next
+rebalance, which can buy the stock back if it still ranks. It's checked on daily closes (the
+live bot would check every few minutes), and it's a backtester option only until it passes:
+
+```bash
+python -m backtester --strategy momentum --sweep --universe sectors --provider yfinance \
+  --start 1999-06-01 --lookbacks 126 --tops 5 --vol-scale 21 --stop 0,10,15,20,25
+```
+
+Pass bar, set before running: a stop level must raise the Sharpe ratio without deepening the
+worst drop on the sector list and on at least one other list.
+
 ### Adding a strategy
 
 Everything else (backtester, live trader, dashboard) works with any strategy, so a new one

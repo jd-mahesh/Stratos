@@ -120,3 +120,59 @@ def test_run_skips_symbols_without_data(tmp_path, monkeypatch):
                                   "DATA_PROVIDER": "synthetic", "SYMBOLS": "AAA,BAD"})
     summary = run(settings, start="2024-01-01", end="2024-12-31", save=False)
     assert summary["symbols"] == ["AAA"] and summary["skipped"] == ["BAD"]
+
+
+# --- trailing stop (momentum --stop, backtester only) -------------------------
+
+def _stop_prices():
+    """A leads with a steep climb, peaks on Feb 12, falls a third over the next week, then goes flat."""
+    a = list(np.linspace(100, 150, 31)) + list(np.linspace(150, 100, 6)[1:]) + [100.0] * 44
+    b = list(np.linspace(100, 110, 80))
+    return {"A": make_bars(a, start="2024-01-01"), "B": make_bars(b, start="2024-01-01")}
+
+
+def _a_trade(stop, mode="intraday"):
+    from trader_core.strategy import Momentum
+
+    result = run_backtest(_stop_prices(), Momentum(lookback=20, top=1, stop=stop), initial_capital=10_000,
+                          slippage_bps=0, fractional=True, signal_mode=mode)
+    return next(t for t in result.trades if t.symbol == "A"), result
+
+
+def test_trailing_stop_sells_mid_month_after_a_drop_from_the_high():
+    trade, result = _a_trade(20)
+    # 20% below the 150 high is 120: hit at the Feb 15 close, two weeks before the March rebalance
+    assert pd.Timestamp("2024-02-14") <= pd.Timestamp(trade.exit_ts) <= pd.Timestamp("2024-02-16")
+    assert trade.exit_price == pytest.approx(120, abs=10.01)
+    assert result.metrics["stop_exits"] >= 1
+    # the cash waits for the next rebalance instead of buying something else mid-month
+    assert not any(pd.Timestamp("2024-02-16") < pd.Timestamp(t.entry_ts) < pd.Timestamp("2024-03-01")
+                   for t in result.trades)
+
+
+def test_without_a_stop_the_position_rides_until_the_rebalance():
+    trade, result = _a_trade(0)
+    assert pd.Timestamp(trade.exit_ts) == pd.Timestamp("2024-03-01")
+    assert "stop_exits" not in result.metrics
+
+
+def test_trailing_stop_in_close_mode_sells_at_the_next_open():
+    intraday, _ = _a_trade(20, "intraday")
+    close, _ = _a_trade(20, "close")
+    assert pd.Timestamp(close.exit_ts) == pd.Timestamp(intraday.exit_ts) + pd.offsets.BDay(1)
+
+
+def test_a_loose_stop_does_not_fire_on_a_smaller_drop():
+    trade, result = _a_trade(40)  # the drop is 33%: a 40% stop never fires
+    assert pd.Timestamp(trade.exit_ts) == pd.Timestamp("2024-03-01")
+    assert result.metrics["stop_exits"] == 0
+
+
+def test_stop_setting_validation_and_params():
+    from trader_core.strategy import Momentum
+
+    assert "stop" not in Momentum().params()  # off: saved runs and live bookkeeping unchanged
+    assert Momentum(stop=15).params()["stop"] == 15
+    for bad in (-1, 100):
+        with pytest.raises(ValueError, match="stop"):
+            Momentum(stop=bad)

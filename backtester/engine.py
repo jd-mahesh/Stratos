@@ -24,6 +24,14 @@ on the last close of the month and trading at the next open; in intraday mode
 it means deciding and trading at the open of the month's first trading day.
 
 Either way the strategy never uses a price it couldn't have seen at the time.
+
+Trailing stop (momentum ``stop``, backtester only): between rebalances, every
+held stock is checked at each day's close against its highest close since it
+was bought. If it closed ``stop`` percent or more below that high, the whole
+position is sold (at that close in intraday mode, at the next open in close
+mode) and the money stays in cash until the next rebalance, which may buy the
+stock again if it still ranks. The live bot checks every few minutes; daily
+closes are the closest a daily backtest can get.
 """
 from __future__ import annotations
 
@@ -188,6 +196,28 @@ def run_backtest(
     def frac(_symbol: str) -> bool:
         return fractional
 
+    stop_pct = float(getattr(getattr(strategy, "normal", strategy), "stop", 0) or 0) / 100
+    peak: Dict[str, float] = {}  # highest price since each position was opened (trailing stop)
+    stop_exits = 0
+
+    def sell(day: date, s: str, qty: float, price: float) -> None:
+        """Sell ``qty`` of ``s`` at ``price`` (before slippage) and close its trade if that's all of it."""
+        nonlocal cash
+        fill = price * (1 - slip)
+        qty = min(qty, shares[s])
+        cash += qty * fill - commission
+        shares[s] -= qty
+        trade = episode[s]
+        if trade is not None:
+            trade.proceeds += qty * fill - commission
+            trade.sold += qty
+        if shares[s] <= EPS:
+            shares[s] = 0.0
+            if trade is not None:
+                trade.exit_ts = day
+            episode[s] = None
+            peak.pop(s, None)
+
     def execute(i: int, signals: Dict[str, Signal], px: Dict[str, float]) -> None:
         """Trade toward ``signals`` at prices ``px`` (NaN = that symbol can't trade right now)."""
         nonlocal cash
@@ -199,20 +229,7 @@ def run_backtest(
         held = {s: shares[s] for s in traded if shares[s] > EPS}
 
         for order in plan_sells(live, held, tradable, equity_now, True, strategy.resize, frac, band):
-            s = order.symbol
-            fill = tradable[s] * (1 - slip)
-            qty = min(order.qty, shares[s])
-            cash += qty * fill - commission
-            shares[s] -= qty
-            trade = episode[s]
-            if trade is not None:
-                trade.proceeds += qty * fill - commission
-                trade.sold += qty
-            if shares[s] <= EPS:
-                shares[s] = 0.0
-                if trade is not None:
-                    trade.exit_ts = day
-                episode[s] = None
+            sell(day, order.symbol, order.qty, tradable[order.symbol])
 
         held = {s: shares[s] for s in traded if shares[s] > EPS}
         buy_px = {s: p * (1 + slip) for s, p in tradable.items()}
@@ -226,6 +243,19 @@ def run_backtest(
             episode[s].cost += order.qty * fill + commission
             episode[s].bought += order.qty
             shares[s] += order.qty
+            peak[s] = max(peak.get(s, 0.0), tradable[s])
+
+    def stops_hit(i: int) -> List[str]:
+        """Held stocks whose close today is ``stop`` or more below their high since entry."""
+        hit = []
+        for s in universe:
+            price = closes[s][i]
+            if shares[s] <= EPS or not np.isfinite(opens[s][i]) or not np.isfinite(price):
+                continue
+            peak[s] = max(peak.get(s, price), price)
+            if price <= peak[s] * (1 - stop_pct):
+                hit.append(s)
+        return hit
 
     def extra_history(i: int, at_open: bool) -> Dict[str, np.ndarray]:
         """Watched prices up to now: through day i's close, or through yesterday plus today's open."""
@@ -277,12 +307,21 @@ def run_backtest(
 
     rows = []
     pending: Optional[Dict[str, Signal]] = None
+    stop_pending: List[str] = []  # close mode: stops triggered at yesterday's close, sold at today's open
     for i in range(first, n):
         if cash > 0 and i > first:  # a day's interest on idle cash
             cash *= 1 + daily_rate
         open_px = {s: opens[s][i] for s in traded}
         # a symbol only has a real close today if it traded today
         close_px = {s: closes[s][i] if np.isfinite(opens[s][i]) else np.nan for s in traded}
+
+        if stop_pending:
+            day = dates[i].date()
+            for s in stop_pending:
+                if shares[s] > EPS and np.isfinite(open_px[s]):
+                    sell(day, s, shares[s], float(open_px[s]))
+                    stop_exits += 1
+            stop_pending = [s for s in stop_pending if shares[s] > EPS]  # couldn't trade today: retry tomorrow
 
         if signal_mode == "close":
             if pending is not None:  # decided at yesterday's close, filled at today's open
@@ -299,6 +338,15 @@ def run_backtest(
             changed = False if closes_only else check_mode(at_close)
             if strategy.rebalance == "daily" or changed:
                 execute(i, decide(history(i), at_close), close_px)
+
+        if stop_pct > 0:
+            hit = stops_hit(i)
+            if signal_mode == "intraday":
+                for s in hit:
+                    sell(dates[i].date(), s, shares[s], float(closes[s][i]))
+                    stop_exits += 1
+            else:
+                stop_pending = sorted(set(stop_pending) | set(hit))
 
         invested = sum(shares[s] * closes[s][i] for s in traded if shares[s] > EPS)
         in_universe = sum(shares[s] * closes[s][i] for s in universe if shares[s] > EPS)
@@ -322,4 +370,6 @@ def run_backtest(
     equity_df["matched_equity"] = same_exposure(equity_df["benchmark_equity"], metrics["avg_exposure"], cash_rate)
     if equity_df["mode"].notna().any():
         metrics["crash_days"] = float((equity_df["mode"] == "crash").mean())
+    if stop_pct > 0:
+        metrics["stop_exits"] = stop_exits
     return BacktestResult(equity_df, trades, metrics, initial_capital, universe)
