@@ -278,3 +278,82 @@ def test_turning_vol_scaling_on_rebalances_once_then_waits_for_next_month(engine
     assert run_tick(on, broker, VolData(0.04), engine, now=NOW.replace(hour=16))["rebalanced"]
     # ...and then it waits for next month like before
     assert not run_tick(on, broker, VolData(0.04), engine, now=NOW.replace(hour=17))["rebalanced"]
+
+
+# --- trading budget (CAPITAL_RESERVE) ----------------------------------------
+
+def budget_settings(**extra):
+    """Momentum top 2 on two rising stocks (50% each), volatility scaling off, $100k reserve."""
+    return vol_settings(MOMENTUM_VOL_SCALE="0", CAPITAL_RESERVE="100000", **extra)
+
+
+def last_price(data, symbol):
+    return float(data.bars[symbol]["close"].iloc[-1])
+
+
+def traded(broker, data, side):
+    return sum(qty * last_price(data, s) for s, qty, sd, _ in broker.orders if sd == side)
+
+
+def test_reserve_trims_positions_down_to_the_budget(engine):
+    # $105k account fully invested, $100k reserve: Stratos should keep only its $5k budget invested.
+    data = VolData()
+    held = {s: 52_500 / last_price(data, s) for s in ("UP", "UP2")}
+    broker = FakeBroker(positions=held, equity=105_000.0, cash=0.0)
+    result = run_tick(budget_settings(), broker, data, engine, now=NOW)
+    assert result["rebalanced"] and result["budget"] == pytest.approx(5_000)
+    assert {o[2] for o in broker.orders} == {"sell"}
+    assert traded(broker, data, "sell") == pytest.approx(100_000, abs=5)  # $50k off each, $2.5k kept in each
+    d = by_symbol(result)
+    assert d["UP"]["order_qty"] * last_price(data, "UP") == pytest.approx(50_000, abs=2)
+
+
+def test_reserve_is_never_spent_on_buys(engine):
+    data = VolData()
+    broker = FakeBroker(equity=105_000.0)  # all cash
+    run_tick(budget_settings(), broker, data, engine, now=NOW)
+    spent = traded(broker, data, "buy")
+    assert 4_990 <= spent <= 5_000  # the $5k budget, never a cent of the reserve
+
+
+def test_buys_with_a_reserve_use_only_cash_freed_by_sells(engine):
+    # Only the reserve is in cash; the budget is all in UP. Selling half of UP pays for UP2, nothing more.
+    data = VolData()
+    broker = FakeBroker(positions={"UP": 5_000 / last_price(data, "UP")}, equity=105_000.0, cash=100_000.0)
+    run_tick(budget_settings(), broker, data, engine, now=NOW)
+    sold, bought = traded(broker, data, "sell"), traded(broker, data, "buy")
+    assert sold == pytest.approx(2_500, abs=1)
+    assert 0 < bought <= sold + 1e-6
+
+
+def test_used_up_budget_halts_and_places_nothing(engine):
+    broker = FakeBroker(equity=99_000.0)  # below the $100k reserve
+    result = run_tick(budget_settings(), broker, VolData(), engine, now=NOW)
+    assert result["status"] == "halted" and "budget is used up" in result["note"]
+    assert broker.orders == []
+    from trader_core import safeguards
+    assert "budget" in safeguards.get_halt(engine)["reason"]
+
+
+def test_setting_a_reserve_rebalances_once_then_waits_for_next_month(engine):
+    from live_trader.trader import rebalance_key
+    from trader_core.strategy import make_strategy
+
+    off, on = vol_settings(MOMENTUM_VOL_SCALE="0"), budget_settings()
+    assert rebalance_key(make_strategy(off)) == rebalance_key(make_strategy(off), 0.0)  # no reserve: key unchanged
+    broker = FakeBroker(equity=105_000.0)
+    assert run_tick(off, broker, VolData(), engine, now=NOW)["rebalanced"]
+    assert not run_tick(off, broker, VolData(), engine, now=NOW.replace(hour=15))["rebalanced"]
+    assert run_tick(on, broker, VolData(), engine, now=NOW.replace(hour=16))["rebalanced"]
+    assert not run_tick(on, broker, VolData(), engine, now=NOW.replace(hour=17))["rebalanced"]
+
+
+def test_snapshots_record_the_reserve(engine):
+    broker = FakeBroker(equity=105_000.0)
+    result = run_tick(budget_settings(DRY_RUN="true"), broker, VolData(), engine, now=NOW)
+    assert (result["reserve"], result["budget"]) == (100_000, pytest.approx(5_000))
+    with engine.connect() as conn:
+        rows = conn.execute(db.equity_history.select()).fetchall()
+    assert [r.reserve for r in rows] == [100_000]
+    no_reserve = run_tick(vol_settings(DRY_RUN="true"), FakeBroker(), VolData(), engine, now=NOW)
+    assert "budget" not in no_reserve

@@ -20,6 +20,9 @@ Every check is a plain function so it can be tested on its own; the live trader
     Settings check     At start-up, refuse a configuration whose normal targets
                        would break the order limits (e.g. MOMENTUM_TOP=2 wants 50%
                        per stock while MAX_POSITION_PCT is 30).
+    Trading budget     With CAPITAL_RESERVE set, every limit above is measured
+                       against the budget (account value - reserve), not the whole
+                       account, and a budget that's used up halts trading.
 
 The defaults are set beyond anything the strategy does in normal operation, so
 they only trip when something is broken.
@@ -69,33 +72,59 @@ def clear_halt(engine) -> Optional[Dict[str, str]]:
 
 # --- circuit breaker ---------------------------------------------------------
 
-def check_losses(engine, equity_now: float, now: datetime, settings) -> Optional[str]:
-    """A reason to halt if the account fell too far since yesterday or from its peak; None if fine.
+def reserve_of(settings) -> float:
+    """The CAPITAL_RESERVE in dollars (0 when unset)."""
+    return float(getattr(settings, "capital_reserve", 0.0) or 0.0)
 
-    Compares with earlier balance snapshots (equity_history). The first run has
-    nothing to compare with and never trips.
-    """
-    if not equity_now or equity_now <= 0 or not math.isfinite(equity_now):
-        return f"account value looks wrong ({equity_now!r})"
-    with engine.connect() as conn:
-        rows = conn.execute(select(db.equity_history.c.ts, db.equity_history.c.equity)).fetchall()
-    if not rows:
+
+def check_budget(equity: float, settings) -> Optional[str]:
+    """A reason to halt if a CAPITAL_RESERVE leaves nothing to trade with; None if fine (or no reserve)."""
+    reserve = reserve_of(settings)
+    if reserve <= 0:
         return None
+    budget = equity - reserve
+    if not math.isfinite(budget) or budget <= 0:
+        return (f"trading budget is used up: account ${equity:,.2f} minus the ${reserve:,.0f} reserve "
+                f"leaves ${budget:,.2f}")
+    return None
+
+
+def check_losses(engine, value_now: float, now: datetime, settings) -> Optional[str]:
+    """A reason to halt if the money Stratos trades fell too far since yesterday or from its peak.
+
+    ``value_now`` is the trading budget: the account value minus CAPITAL_RESERVE
+    (just the account value when there's no reserve). It's compared with earlier
+    balance snapshots (equity_history) taken under the same reserve, so changing
+    the reserve starts a fresh history instead of looking like a huge loss. The
+    first run under a reserve has nothing to compare with and never trips.
+    """
+    reserve = reserve_of(settings)
+    label = "trading budget" if reserve > 0 else "account"
+    if not value_now or value_now <= 0 or not math.isfinite(value_now):
+        return f"{label} value looks wrong ({value_now!r})"
+    t = db.equity_history.c
+    with engine.connect() as conn:
+        rows = conn.execute(select(t.ts, t.equity, t.reserve)).fetchall()
+    history = pd.DataFrame(rows, columns=["ts", "equity", "reserve"])
+    history["reserve"] = pd.to_numeric(history["reserve"]).fillna(0.0)
+    history = history[(history["reserve"] - reserve).abs() < 0.005]
+    if history.empty:
+        return None
+    history["value"] = history["equity"] - history["reserve"]
     today = now.astimezone(NY).date()
-    history = pd.DataFrame(rows, columns=["ts", "equity"])
     history["day"] = pd.to_datetime(history["ts"], utc=True).dt.tz_convert(NY).dt.date
     earlier = history[history["day"] < today].sort_values("ts")
     if not earlier.empty:
-        previous = float(earlier["equity"].iloc[-1])
-        change = equity_now / previous - 1
+        previous = float(earlier["value"].iloc[-1])
+        change = value_now / previous - 1
         if change <= -settings.daily_loss_halt_pct:
-            return (f"account fell {change * 100:.1f}% since the previous day "
-                    f"(${previous:,.0f} -> ${equity_now:,.0f}); the limit is "
+            return (f"{label} fell {change * 100:.1f}% since the previous day "
+                    f"(${previous:,.0f} -> ${value_now:,.0f}); the limit is "
                     f"{settings.daily_loss_halt_pct * 100:.0f}%")
-    peak = max(float(history["equity"].max()), equity_now)
-    drawdown = equity_now / peak - 1
+    peak = max(float(history["value"].max()), value_now)
+    drawdown = value_now / peak - 1
     if drawdown <= -settings.drawdown_halt_pct:
-        return (f"account is {drawdown * 100:.1f}% below its peak (${peak:,.0f} -> ${equity_now:,.0f}); "
+        return (f"{label} is {drawdown * 100:.1f}% below its peak (${peak:,.0f} -> ${value_now:,.0f}); "
                 f"the limit is {settings.drawdown_halt_pct * 100:.0f}%")
     return None
 
@@ -132,7 +161,9 @@ def check_orders(orders: Iterable[Order], held: Mapping[str, float], prices: Map
     """Problems with a planned set of orders (empty list = all within limits).
 
     ``held`` is the position before any of these orders. Sells only reduce risk,
-    so they're checked only for selling more than is held.
+    so they're checked only for selling more than is held. ``equity`` is the money
+    Stratos trades with: the trading budget when CAPITAL_RESERVE is set, so the
+    percent limits apply to the budget.
     """
     orders = list(orders)
     problems: List[str] = []

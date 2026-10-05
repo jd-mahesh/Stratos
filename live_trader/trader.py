@@ -30,6 +30,13 @@ Safeguards (trader_core/safeguards.py) wrap every run: a kill switch, a loss
 circuit breaker that halts until someone resumes it, price sanity checks, and
 order limits checked before anything is sent. Problems raise alerts
 (live_trader/alerts.py).
+
+Trading budget (CAPITAL_RESERVE): Stratos can be told to leave a fixed number
+of dollars of the account alone, e.g. to trade a $100k paper account as if it
+were a small real one. It then treats ``account value - reserve`` as the whole
+account: targets, the cash it may spend, the order limits and the circuit
+breaker all use that budget, and the reserve is never spent. Setting or
+changing the reserve rebalances on the next run.
 """
 from __future__ import annotations
 
@@ -82,9 +89,11 @@ def closes_for_signal(bars: pd.DataFrame, today, latest_price: Optional[float], 
     return completed
 
 
-def rebalance_key(strategy: Strategy) -> str:
-    """bot_state key for a strategy's last rebalance; changing the strategy or its settings starts fresh."""
-    return f"last_rebalance:{strategy.name}:{json.dumps(strategy.params(), sort_keys=True)}"
+def rebalance_key(strategy: Strategy, reserve: float = 0.0) -> str:
+    """bot_state key for a strategy's last rebalance; changing the strategy, its settings or the
+    CAPITAL_RESERVE starts fresh (so the change is traded on the next run)."""
+    key = f"last_rebalance:{strategy.name}:{json.dumps(strategy.params(), sort_keys=True)}"
+    return f"{key}:reserve={reserve:.2f}" if reserve > 0 else key
 
 
 def _next_month(today: date) -> str:
@@ -92,10 +101,11 @@ def _next_month(today: date) -> str:
     return first.strftime("%B %Y")
 
 
-def _snapshot(engine, broker: Broker, now: datetime) -> float:
+def _snapshot(engine, broker: Broker, now: datetime, reserve: float = 0.0) -> float:
     after = broker.get_account()
     db.insert_rows(engine, db.equity_history, [{
         "ts": now, "equity": after.equity, "cash": after.cash, "buying_power": after.buying_power,
+        "reserve": reserve,
     }])
     db.replace_positions(engine, [
         {
@@ -132,18 +142,26 @@ def run_tick(
         alert(engine, settings, "settings", f"Stratos refuses to trade: {problem}", now, logging.ERROR)
         raise SafetyConfigError(problem)
 
+    reserve = safeguards.reserve_of(settings)
     today = now.astimezone(NY).date()
     month = today.strftime("%Y-%m")
-    key = rebalance_key(strategy)
+    key = rebalance_key(strategy, reserve)
     mode_key = f"mode:{key}"
     has_modes = getattr(strategy, "detector", None) is not None
     done_this_month = strategy.rebalance == "monthly" and db.get_state(engine, key) == month
 
+    def money(equity: float) -> Dict:
+        """Summary fields for the account value (and the trading budget when there's a reserve)."""
+        out = {"equity": equity}
+        if reserve > 0:
+            out.update(reserve=reserve, budget=equity - reserve)
+        return out
+
     def stopped(status: str, note: str, mode: Optional[str] = None) -> Dict:
-        equity = _snapshot(engine, broker, now)
+        equity = _snapshot(engine, broker, now, reserve)
         log.warning(note) if status != "ok" else log.info(note)
         return {"status": status, "rebalanced": False, "note": note, "mode": mode, "ts": now.isoformat(),
-                "equity": equity, "dry_run": settings.dry_run, "decisions": []}
+                **money(equity), "dry_run": settings.dry_run, "decisions": []}
 
     def not_due(note: str, mode: Optional[str] = None) -> Dict:
         return stopped("ok", note, mode)
@@ -155,7 +173,9 @@ def run_tick(
     if halt:
         return stopped("halted", f"trading halted since {halt.get('since')}: {halt.get('reason')}. "
                                  "Check what happened, then run `python -m live_trader --resume`.")
-    loss = safeguards.check_losses(engine, broker.get_account().equity, now, settings)
+    equity_now = broker.get_account().equity
+    loss = (safeguards.check_budget(equity_now, settings)
+            or safeguards.check_losses(engine, equity_now - reserve, now, settings))
     if loss:
         if not settings.dry_run:
             safeguards.set_halt(engine, loss, now)
@@ -210,6 +230,15 @@ def run_tick(
     account = broker.get_account()
     positions = broker.get_positions()
     pending_orders = broker.open_order_symbols()
+    # The money Stratos trades with: the whole account, or what's above CAPITAL_RESERVE.
+    budget = account.equity - reserve
+    if budget <= 0:  # checked above already; never size orders from a non-positive budget
+        return stopped("halted", f"trading budget is ${budget:,.2f} (account minus the ${reserve:,.0f} reserve); "
+                                 "nothing to trade with")
+
+    def spendable(freed: float = 0.0) -> float:
+        """Cash Stratos may spend on buys: what's on hand plus what sells freed, minus the reserve."""
+        return max(max(account.cash, 0.0) + freed - reserve, 0.0)
 
     trade_symbols = symbols + [a for a in strategy.tradable_extras if a not in symbols]
     rows: Dict[str, Dict] = {}
@@ -258,7 +287,7 @@ def run_tick(
             row["reason"] += "; short position held, this bot only manages long positions"
         elif sig.weight is not None:
             actionable[symbol] = sig
-            row.update(action="hold", target_qty=sig.weight * account.equity / prices[symbol])
+            row.update(action="hold", target_qty=sig.weight * budget / prices[symbol])
 
     held = {s: rows[s]["current_qty"] for s in actionable if rows[s]["current_qty"] > 0}
     bucket = order_bucket(scheduled_time, now)
@@ -271,7 +300,7 @@ def run_tick(
         decisions: List[Dict] = [rows[s] for s in trade_symbols
                                  if s in symbols or rows[s]["action"] != "skip" or rows[s]["current_qty"] > 0]
         db.insert_rows(engine, db.decisions, decisions)
-        equity = _snapshot(engine, broker, now)
+        equity = _snapshot(engine, broker, now, reserve)
         summary = {
             "status": decisions_status,
             "rebalanced": decisions_status == "ok",
@@ -280,7 +309,7 @@ def run_tick(
             "mode": mode,
             "mode_note": regime.reason if regime is not None else None,
             "ts": now.isoformat(),
-            "equity": equity,
+            **money(equity),
             "dry_run": settings.dry_run,
             "safety": {"skipped": unsafe} if unsafe else {},
             "decisions": [{k: d[k] for k in ("symbol", "action", "order_qty", "price", "reason")} for d in decisions],
@@ -292,14 +321,14 @@ def run_tick(
         return summary
 
     # --- plan everything first and check it against the order limits ------------
-    sells = plan_sells(actionable, held, prices, account.equity, True, strategy.resize, fractional)
+    sells = plan_sells(actionable, held, prices, budget, True, strategy.resize, fractional)
     after_sells = dict(held)
     for order in sells:
         after_sells[order.symbol] = after_sells.get(order.symbol, 0.0) - order.qty
-    expected_cash = max(account.cash, 0.0) + sum(o.qty * prices[o.symbol] for o in sells)
+    expected_cash = spendable(sum(o.qty * prices[o.symbol] for o in sells))
     planned_buys, _ = plan_buys(actionable, {s: q for s, q in after_sells.items() if q > 1e-9}, prices,
-                                account.equity, expected_cash, True, strategy.resize, fractional)
-    problems = safeguards.check_orders(sells + planned_buys, held, prices, account.equity, settings)
+                                budget, expected_cash, True, strategy.resize, fractional)
+    problems = safeguards.check_orders(sells + planned_buys, held, prices, budget, settings)
     if problems:
         for order in sells + planned_buys:
             rows[order.symbol].update(action="blocked", order_qty=float(order.qty))
@@ -339,11 +368,11 @@ def run_tick(
     held = {s: q for s, q in held.items() if q > 1e-9}
 
     # Re-plan buys with the cash the sells actually freed (a failed sell frees nothing).
-    buys, skipped = plan_buys(actionable, held, prices, account.equity, max(account.cash, 0.0) + freed,
+    buys, skipped = plan_buys(actionable, held, prices, budget, spendable(freed),
                               True, strategy.resize, fractional)
     for symbol, why in skipped.items():
         rows[symbol].update(action="skip", reason=f"{rows[symbol]['reason']}; {why}")
-    late = safeguards.check_orders(buys, held, prices, account.equity, settings)
+    late = safeguards.check_orders(buys, held, prices, budget, settings)
     if late:  # can't normally happen (a subset of what passed above), but never send unchecked orders
         message = "Buys cancelled, not sent: " + "; ".join(late)
         alert(engine, settings, "order-limits", message, now, logging.ERROR)

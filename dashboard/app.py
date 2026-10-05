@@ -62,7 +62,7 @@ def money(v) -> str:
 
 
 def paper_tab() -> None:
-    equity = query("SELECT ts, equity, cash FROM equity_history ORDER BY ts")
+    equity = query("SELECT ts, equity, cash, reserve FROM equity_history ORDER BY ts")
     if equity.empty:
         st.info(
             "No live-trader runs recorded yet. Run `python -m live_trader --dry-run --force` "
@@ -70,16 +70,26 @@ def paper_tab() -> None:
         )
         return
     equity["ts"] = pd.to_datetime(equity["ts"], utc=True).dt.tz_convert("America/New_York")
+    equity["reserve"] = pd.to_numeric(equity["reserve"]).fillna(0.0)
+    reserve = float(equity["reserve"].iloc[-1])
+    whole_account = float(equity["equity"].iloc[-1])
+    # With CAPITAL_RESERVE set, Stratos trades only what's above the reserve: show that budget,
+    # counted from when the current reserve was set.
+    equity = equity[(equity["reserve"] - reserve).abs() < 0.005].copy()
+    equity["value"] = equity["equity"] - equity["reserve"]
     latest, first = equity.iloc[-1], equity.iloc[0]
     today = latest["ts"].date()
     before_today = equity[equity["ts"].dt.date < today]
-    day_base = before_today.iloc[-1]["equity"] if not before_today.empty else first["equity"]
+    day_base = before_today.iloc[-1]["value"] if not before_today.empty else first["value"]
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Equity", money(latest["equity"]))
-    c2.metric("Today", pct(latest["equity"] / day_base - 1))
-    c3.metric("Since first run", pct(latest["equity"] / first["equity"] - 1))
+    c1.metric("Trading budget" if reserve > 0 else "Equity", money(latest["value"]))
+    c2.metric("Today", pct(latest["value"] / day_base - 1))
+    c3.metric("Since budget was set" if reserve > 0 else "Since first run", pct(latest["value"] / first["value"] - 1))
     c4.metric("Last update (ET)", latest["ts"].strftime("%b %d, %H:%M"))
+    if reserve > 0:
+        st.caption(f"Stratos trades only what's above a {money(reserve)} reserve (CAPITAL_RESERVE), "
+                   f"as if that were the whole account. Whole paper account: {money(whole_account)}.")
 
     halt = query("SELECT value FROM bot_state WHERE key = 'halt'")
     if not halt.empty and halt.iloc[0]["value"]:
@@ -97,8 +107,9 @@ def paper_tab() -> None:
         else:
             st.success("Normal mode: the crash detector sees normal market conditions.")
 
-    st.subheader("Equity")
-    st.line_chart(equity.set_index("ts")[["equity"]], height=280)
+    st.subheader("Trading budget" if reserve > 0 else "Equity")
+    st.line_chart(equity.set_index("ts")[["value"]].rename(columns={"value": "budget" if reserve > 0 else "equity"}),
+                  height=280)
 
     left, right = st.columns([2, 3])
     with left:

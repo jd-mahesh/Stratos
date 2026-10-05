@@ -13,6 +13,7 @@ never need to be baked into an image or typed into the Lambda console.
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional
@@ -81,6 +82,24 @@ def _positive_int(env: Mapping[str, str], name: str, default: int) -> int:
         raise ValueError(f"{name} must be a whole number, not {raw!r}") from None
     if value < 1:
         raise ValueError(f"{name} must be at least 1, not {value}")
+    return value
+
+
+def _dollars(env: Mapping[str, str], name: str, default: float = 0.0) -> float:
+    """A dollar amount that must be 0 or more (e.g. CAPITAL_RESERVE=100000).
+
+    Plain numbers only: a typo stops the bot with a clear error instead of
+    trading with a different amount than intended.
+    """
+    raw = env.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = float(str(raw).strip())
+    except ValueError:
+        raise ValueError(f"{name} must be a plain number of dollars (e.g. 100000), not {raw!r}") from None
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be 0 or more dollars, not {raw}")
     return value
 
 
@@ -153,6 +172,9 @@ class Settings:
     daily_loss_halt_pct: float = 0.15  # halt if the account falls this much since the previous day
     drawdown_halt_pct: float = 0.60  # halt if the account falls this much from its peak
     alert_topic_arn: Optional[str] = None  # AWS SNS topic for alert emails (none = log only)
+    # Live trader only: dollars of the account Stratos must leave alone. It trades with
+    # (account value - reserve) as if that were the whole account. 0 = use the whole account.
+    capital_reserve: float = 0.0
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "Settings":
@@ -203,6 +225,7 @@ class Settings:
             daily_loss_halt_pct=_percent(env, "DAILY_LOSS_HALT_PCT", 15),
             drawdown_halt_pct=_percent(env, "DRAWDOWN_HALT_PCT", 60),
             alert_topic_arn=(env.get("ALERT_TOPIC_ARN") or "").strip() or None,
+            capital_reserve=_dollars(env, "CAPITAL_RESERVE"),
         )
 
     def require_alpaca(self) -> None:

@@ -270,11 +270,24 @@ at most once a day per problem). All limits are settings in `.env` (see `.env.ex
 | Short-sale guard | Never sell more than is held | on |
 | Price sanity | Skip a symbol whose live price is missing, whose data is stale, or that moved implausibly far from its last close; retry next run | 40% move, 5 days old |
 | Circuit breaker | Halt after a big loss in a day or from the peak, and stay halted until a person runs `python -m live_trader --resume` (or invokes the Lambda with `{"resume": true}`) | 15% in a day, 60% from peak |
+| Budget guard | With `CAPITAL_RESERVE` set, all limits above are measured on the trading budget, and a used-up budget halts trading | on when a reserve is set |
 
 The defaults sit beyond anything the strategy does normally (its worst backtested drop was
 about 40%), so they only trip when something is broken: bad data, a bug, a misconfiguration.
 Deposits or withdrawals look like gains or losses to the circuit breaker. The dashboard shows
 a red banner while trading is halted.
+
+### Trading a small budget (`CAPITAL_RESERVE`)
+
+A $100k paper account doesn't behave like a small real one. `CAPITAL_RESERVE` sets a number
+of dollars Stratos must leave alone; it then treats `account value - reserve` as the whole
+account. With `CAPITAL_RESERVE=100000` on a $105k account, Stratos trades the $5k above the
+reserve: position targets, the cash it may spend, the order limits and the circuit breaker
+all use that budget, and the reserve is never spent. If the budget is used up, trading halts.
+Setting or changing the reserve rebalances on the next run (positions are trimmed or topped
+up to the new targets), and the dashboard then shows the budget instead of the whole account.
+Set it back to `0` to trade the whole account again. It applies to the live trader only; for
+a small-account backtest, use `INITIAL_CAPITAL`.
 
 ## Reading backtest results honestly
 

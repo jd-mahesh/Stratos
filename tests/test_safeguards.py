@@ -284,3 +284,49 @@ def test_stale_or_bad_index_price_falls_back_to_closes(engine):
 
     result = run_tick(s, FakeBroker(), WithIndex(), engine, now=NOW)
     assert result["status"] == "ok" and result["mode"] == "normal"
+
+
+# --- trading budget (CAPITAL_RESERVE) ----------------------------------------
+
+def test_capital_reserve_setting():
+    assert Settings.from_env({}).capital_reserve == 0
+    assert Settings.from_env({"CAPITAL_RESERVE": "100000"}).capital_reserve == 100_000
+    for bad in ("abc", "-5", "$100,000", "inf"):
+        with pytest.raises(ValueError, match="CAPITAL_RESERVE"):
+            Settings.from_env({"CAPITAL_RESERVE": bad})
+
+
+def test_check_budget():
+    assert safeguards.check_budget(50.0, two_stock()) is None  # no reserve: never applies
+    with_reserve = two_stock(CAPITAL_RESERVE="100000")
+    assert safeguards.check_budget(105_000.0, with_reserve) is None
+    assert "used up" in safeguards.check_budget(100_000.0, with_reserve)
+    assert "used up" in safeguards.check_budget(90_000.0, with_reserve)
+
+
+def reserve_snapshot(engine, ts, equity, reserve):
+    db.insert_rows(engine, db.equity_history, [{"ts": ts, "equity": equity, "cash": equity,
+                                                "buying_power": equity, "reserve": reserve}])
+
+
+def test_setting_a_reserve_does_not_look_like_a_loss(engine):
+    # Yesterday's $105k account vs today's $5k budget is a new history, not a 95% drop.
+    snapshot(engine, NOW - timedelta(days=1), 105_000)
+    assert safeguards.check_losses(engine, 5_000, NOW, two_stock(CAPITAL_RESERVE="100000")) is None
+
+
+def test_loss_limits_apply_to_the_budget(engine):
+    s = two_stock(CAPITAL_RESERVE="100000")
+    reserve_snapshot(engine, NOW - timedelta(days=1), 106_000, 100_000)  # budget $6k yesterday
+    assert safeguards.check_losses(engine, 5_500, NOW, s) is None  # -8%
+    reason = safeguards.check_losses(engine, 5_000, NOW, s)  # -17% of the budget, under 1% of the account
+    assert reason and "trading budget fell" in reason
+    # without the reserve, the same account history is judged on the whole account
+    assert safeguards.check_losses(engine, 105_000, NOW, two_stock()) is None
+
+
+def test_order_limits_are_measured_against_the_budget():
+    s = two_stock(MAX_ORDER_PCT="25", MAX_POSITION_PCT="30", CAPITAL_RESERVE="100000")
+    buy = [Order("UP", "buy", 20, "test")]  # $2,000 at $100
+    assert safeguards.check_orders(buy, {}, {"UP": 100.0}, 105_000, s) == []  # 2% of the whole account
+    assert safeguards.check_orders(buy, {}, {"UP": 100.0}, 5_000, s)  # 40% of a $5k budget: blocked

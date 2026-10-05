@@ -130,6 +130,9 @@ equity_history = Table(
     Column("equity", Float, nullable=False),
     Column("cash", Float, nullable=False),
     Column("buying_power", Float, nullable=False),
+    # CAPITAL_RESERVE in force when the snapshot was taken (NULL = 0, before the setting
+    # existed). Stratos's trading budget at that moment is equity - reserve.
+    Column("reserve", Float),
 )
 
 positions = Table(
