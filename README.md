@@ -325,7 +325,9 @@ at most once a day per problem). All limits are settings in `.env` (see `.env.ex
 The defaults sit beyond anything the strategy does normally (its worst backtested drop was
 about 40%), so they only trip when something is broken: bad data, a bug, a misconfiguration.
 Deposits or withdrawals look like gains or losses to the circuit breaker. The dashboard shows
-a red banner while trading is halted.
+a red banner while trading is halted. To check that alert emails reach you, invoke the
+live-trader Lambda with `{"test_alert": true}`: it sends one test alert through the real
+alert path, reports `alert_sent` or the reason it failed, and never trades.
 
 ### Trading a small budget (`CAPITAL_RESERVE`)
 

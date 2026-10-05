@@ -330,3 +330,30 @@ def test_order_limits_are_measured_against_the_budget():
     buy = [Order("UP", "buy", 20, "test")]  # $2,000 at $100
     assert safeguards.check_orders(buy, {}, {"UP": 100.0}, 105_000, s) == []  # 2% of the whole account
     assert safeguards.check_orders(buy, {}, {"UP": 100.0}, 5_000, s)  # 40% of a $5k budget: blocked
+
+
+def test_lambda_test_alert_sends_one_email_and_never_trades(monkeypatch, sent):
+    from live_trader import handler as lambda_handler
+
+    broker = FakeBroker()
+    monkeypatch.setattr(lambda_handler, "_cache", {"broker": broker})  # no engine: it must not need the database
+    monkeypatch.setenv("ALERT_TOPIC_ARN", "arn:aws:sns:us-east-2:123456789012:stratos-alerts")
+    out = lambda_handler.handler({"test_alert": True}, None)
+    assert out["status"] == "alert_sent"
+    assert len(sent) == 1 and "test alert" in sent[0][0]
+    assert broker.orders == []
+
+
+def test_lambda_test_alert_reports_problems_instead_of_crashing(monkeypatch):
+    from live_trader import handler as lambda_handler
+
+    monkeypatch.delenv("ALERT_TOPIC_ARN", raising=False)
+    assert lambda_handler.handler({"test_alert": True}, None)["status"] == "no_topic"
+
+    def denied(topic, subject, message):
+        raise RuntimeError("AuthorizationError: not authorized to perform SNS:Publish")
+
+    monkeypatch.setenv("ALERT_TOPIC_ARN", "arn:aws:sns:us-east-2:123456789012:stratos-alerts")
+    monkeypatch.setattr(alerts, "_publish", denied)
+    out = lambda_handler.handler({"test_alert": True}, None)
+    assert out["status"] == "alert_failed" and "not authorized" in out["error"]
