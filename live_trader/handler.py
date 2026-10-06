@@ -11,16 +11,21 @@ To check that alert emails work end to end (this function's permissions, the
 SNS topic, your subscription), invoke it with ``{"test_alert": true}``: it sends
 one test alert through the same path real alerts use and reports whether that
 worked. It doesn't touch the database or the broker and never trades.
+
+The watchdog invokes it with ``{"watchdog": true}`` on its own schedule: if the
+market is open and no run has completed for 15 minutes, it emails you once per
+outage (live_trader/status.py). It never trades.
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from trader_core import db, safeguards
 from trader_core.config import Settings
 from trader_core.data import make_provider
 
-from . import alerts
+from . import alerts, status
 from .broker import AlpacaBroker
 from .trader import run_tick
 
@@ -61,6 +66,9 @@ def handler(event, context):
     settings = Settings.from_env()
     if event.get("test_alert") is True:
         return test_alert(settings)
+    if event.get("watchdog") is True:
+        broker, _data, engine = _deps(settings)
+        return status.watchdog(engine, settings, broker, datetime.now(timezone.utc))
     broker, data, engine = _deps(settings)
     if event.get("resume") is True:
         previous = safeguards.clear_halt(engine)

@@ -8,6 +8,7 @@ This project only ever connects to Alpaca's *paper* environment.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Dict, Optional, Protocol, Set
 
 
@@ -44,6 +45,8 @@ class Broker(Protocol):
 
     def is_fractionable(self, symbol: str) -> bool: ...
 
+    def next_close(self) -> Optional[datetime]: ...
+
 
 def _f(value) -> Optional[float]:
     return None if value is None else float(value)
@@ -58,6 +61,11 @@ class AlpacaBroker:
 
     def is_market_open(self) -> bool:
         return bool(self._client.get_clock().is_open)
+
+    def next_close(self) -> Optional[datetime]:
+        """When the market next closes (today's close while it's open; early closes included)."""
+        close = self._client.get_clock().next_close
+        return close if close is None or close.tzinfo else close.replace(tzinfo=timezone.utc)
 
     def get_account(self) -> Account:
         a = self._client.get_account()

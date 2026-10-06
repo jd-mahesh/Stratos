@@ -383,7 +383,55 @@ the response says why. It never trades. Trust this test over IAM's policy simula
 on accounts created through the newer sign-up, `aws iam simulate-principal-policy` can
 report `explicitDeny` from an organization rule for a publish that actually works.
 
-SNS email is free at this volume (the first 1,000 emails a month).
+### Status emails: online, trades, offline
+
+Problem alerts are always on once the topic is set. To also hear about normal operation,
+turn on status emails:
+
+```bash
+set_lambda_setting STATUS_EMAILS true
+```
+
+Each trading day you then get "Stratos is online" from the first run after the open, a
+"Stratos bought …" or "Stratos sold …" email from any run that places orders, and "Stratos is
+offline for the day" (with the day's summary) from the last run before the close, sent as
+that run's final step. Early-close days are handled automatically. Dry runs never send them.
+
+### Watchdog: an alert if Stratos stops running
+
+Stratos can't report its own outage, so a second schedule checks on it every 15 minutes
+during market hours. If no run has finished in 15 minutes while the market is open, it emails
+"Stratos alert: offline" once per outage. It reuses the scheduler role and never trades.
+
+```bash
+aws scheduler create-schedule --name stratos-watchdog \
+  --schedule-expression "cron(0/15 9-15 ? * MON-FRI *)" \
+  --schedule-expression-timezone "America/New_York" \
+  --flexible-time-window '{"Mode":"OFF"}' \
+  --target "{\"Arn\":\"$LIVE_ARN\",\"RoleArn\":\"$SCHED_ROLE\",\"Input\":\"{\\\"watchdog\\\": true}\"}"
+```
+
+(Before 9:45 it stays quiet, since the day's first runs may not have happened yet.)
+
+### Crash alarm
+
+If runs start failing outright, a CloudWatch alarm emails you within about 5 minutes:
+
+```bash
+aws cloudwatch put-metric-alarm --alarm-name stratos-live-trader-errors \
+  --namespace AWS/Lambda --metric-name Errors \
+  --dimensions Name=FunctionName,Value=stratos-live-trader \
+  --statistic Sum --period 300 --evaluation-periods 1 --threshold 1 \
+  --comparison-operator GreaterThanOrEqualToThreshold --treat-missing-data notBreaching \
+  --alarm-actions "$TOPIC_ARN"
+
+# test it: force the alarm on (you should get an email), then it resets itself on the next check
+aws cloudwatch set-alarm-state --alarm-name stratos-live-trader-errors \
+  --state-value ALARM --state-reason "Testing the Stratos crash alarm"
+```
+
+SNS email is free at this volume (the first 1,000 emails a month), and the first 10
+CloudWatch alarms are free.
 
 ---
 
@@ -481,6 +529,8 @@ Delete everything:
 
 ```bash
 aws scheduler delete-schedule --name stratos-every-5-min
+aws scheduler delete-schedule --name stratos-watchdog
+aws cloudwatch delete-alarms --alarm-names stratos-live-trader-errors
 aws lambda delete-function --function-name stratos-live-trader
 aws lambda delete-function --function-name stratos-backtester
 # ECS Express dashboard, if you deployed it: delete the service in the ECS console (this also removes its load balancer)

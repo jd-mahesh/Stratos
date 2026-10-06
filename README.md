@@ -329,6 +329,13 @@ a red banner while trading is halted. To check that alert emails reach you, invo
 live-trader Lambda with `{"test_alert": true}`: it sends one test alert through the real
 alert path, reports `alert_sent` or the reason it failed, and never trades.
 
+With `STATUS_EMAILS=true` you also get routine status emails: "Stratos is online" from the
+first run after the open, "Stratos bought …" / "Stratos sold …" from any run that places
+orders, and "Stratos is offline for the day" with a summary, sent by the last run before the
+close as its final step (early closes included). A separate watchdog schedule emails you if
+Stratos stops running during market hours, and a CloudWatch alarm if runs start failing
+(setup in docs/DEPLOY.md, step 9).
+
 ### Trading a small budget (`CAPITAL_RESERVE`)
 
 A $100k paper account doesn't behave like a small real one. `CAPITAL_RESERVE` sets a number

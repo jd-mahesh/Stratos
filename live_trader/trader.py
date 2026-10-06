@@ -55,6 +55,7 @@ from trader_core.config import Settings
 from trader_core.portfolio import Order, plan_buys, plan_sells, share_quantity  # noqa: F401 (re-exported)
 from trader_core.strategy import Strategy, make_strategy
 
+from . import status
 from .alerts import alert
 from .broker import Broker, DuplicateOrderError
 
@@ -129,7 +130,26 @@ def run_tick(
     now: Optional[datetime] = None,
     scheduled_time: Optional[str] = None,
 ) -> Dict:
+    """One tick (see _tick), then any status emails it calls for (live_trader/status.py)."""
     now = now or datetime.now(timezone.utc)
+    result = _tick(settings, broker, data, engine, now, scheduled_time)
+    try:
+        sent = status.after_run(engine, settings, broker, result, now)
+        if sent:
+            result["status_emails"] = sent
+    except Exception:  # a status email must never turn a good run into a failed one
+        log.exception("status emails failed")
+    return result
+
+
+def _tick(
+    settings: Settings,
+    broker: Broker,
+    data,
+    engine,
+    now: datetime,
+    scheduled_time: Optional[str] = None,
+) -> Dict:
     symbols = settings.symbols
 
     if not broker.is_market_open() and not settings.force_run:

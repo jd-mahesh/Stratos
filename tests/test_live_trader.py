@@ -16,7 +16,7 @@ NOW = datetime(2024, 6, 3, 14, 7, tzinfo=timezone.utc)  # Monday 10:07 ET
 
 class FakeBroker:
     def __init__(self, positions=None, open_orders=(), market_open=True, equity=100_000.0, duplicate=False,
-                 cash=None, buying_power=None, fractionable=True):
+                 cash=None, buying_power=None, fractionable=True, close=None):
         self.positions = {s: PositionInfo(s, q) for s, q in (positions or {}).items()}
         self.open_orders = set(open_orders)
         self.market_open = market_open
@@ -25,6 +25,7 @@ class FakeBroker:
         self.buying_power = self.cash if buying_power is None else buying_power
         self.duplicate = duplicate
         self.fractionable = fractionable
+        self.close = close  # today's market close (None = unknown), for the end-of-day status email
         self.orders = []
 
     def is_market_open(self):
@@ -35,6 +36,9 @@ class FakeBroker:
 
     def is_fractionable(self, symbol):
         return self.fractionable
+
+    def next_close(self):
+        return self.close
 
     def get_positions(self):
         return dict(self.positions)

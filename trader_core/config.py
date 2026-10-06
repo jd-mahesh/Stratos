@@ -175,6 +175,9 @@ class Settings:
     # Live trader only: dollars of the account Stratos must leave alone. It trades with
     # (account value - reserve) as if that were the whole account. 0 = use the whole account.
     capital_reserve: float = 0.0
+    # Live trader only: also email routine status (online in the morning, each buy and sell,
+    # offline at the end of the day), not just problems. Needs ALERT_TOPIC_ARN; never in dry runs.
+    status_emails: bool = False
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "Settings":
@@ -226,6 +229,7 @@ class Settings:
             drawdown_halt_pct=_percent(env, "DRAWDOWN_HALT_PCT", 60),
             alert_topic_arn=(env.get("ALERT_TOPIC_ARN") or "").strip() or None,
             capital_reserve=_dollars(env, "CAPITAL_RESERVE"),
+            status_emails=_bool(env.get("STATUS_EMAILS")),
         )
 
     def require_alpaca(self) -> None:

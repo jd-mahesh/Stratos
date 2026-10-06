@@ -7,6 +7,10 @@ you. Without it (e.g. on your laptop) alerts only go to the log.
 The bot runs every five minutes, so the same problem would otherwise send an
 email every five minutes. Each alert has a key, and a given key is sent at most
 once per day (remembered in the bot_state table). Dry runs only log.
+
+Routine status emails (``notify``: online in the morning, each buy and sell, offline
+at the end of the day; see live_trader/status.py) go to the same topic, but only
+when STATUS_EMAILS is on.
 """
 from __future__ import annotations
 
@@ -25,6 +29,30 @@ def _publish(topic_arn: str, subject: str, message: str) -> None:
     import boto3  # only needed on AWS
 
     boto3.client("sns").publish(TopicArn=topic_arn, Subject=subject[:100], Message=message)
+
+
+def notify(engine, settings, key: str, subject: str, message: str, once: Optional[str] = None) -> bool:
+    """Send a routine status email (online, trades, offline). Returns True if sent.
+
+    Only with STATUS_EMAILS on, a topic set and not in a dry run. With ``once``, a
+    given ``key`` is sent at most once per value of ``once`` (e.g. once per day).
+    Never raises: a status email must not get in the way of trading.
+    """
+    log.info("STATUS [%s] %s", key, subject)
+    topic: Optional[str] = getattr(settings, "alert_topic_arn", None)
+    if not (getattr(settings, "status_emails", False) and topic) or settings.dry_run or engine is None:
+        return False
+    state_key = f"status:{key}"
+    if once is not None and db.get_state(engine, state_key) == once:
+        return False
+    try:
+        _publish(topic, subject, message)
+    except Exception:
+        log.exception("could not send status email %s", key)
+        return False
+    if once is not None:
+        db.set_state(engine, state_key, once)
+    return True
 
 
 def alert(engine, settings, key: str, message: str, now: datetime, level: int = logging.WARNING) -> bool:
