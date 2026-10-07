@@ -337,19 +337,26 @@ def paper_tab() -> None:
         else:
             st.dataframe(pos, hide_index=True, width="stretch")
     with right:
-        st.subheader("Decisions")
         dec = query(
             "SELECT ts, symbol, action, order_qty, price, fast_ma, slow_ma, reason, dry_run "
             "FROM decisions ORDER BY ts DESC LIMIT 500"
         )
+        # the toggle sits on the heading's line, so this table starts level with the Positions table
+        head, toggle = st.columns([3, 2], vertical_alignment="bottom")
+        head.subheader("Decisions")
         if dec.empty:
             st.caption("No decisions yet.")
             return
+        with toggle:
+            only_trades = st.toggle("Only buys, sells and errors", value=True)
         dec["ts"] = pd.to_datetime(dec["ts"], utc=True).dt.tz_convert("America/New_York")
-        only_trades = st.toggle("Only buys, sells and errors", value=True)
         if only_trades:
             dec = dec[dec["action"].isin(["buy", "sell", "error"])]
-        st.dataframe(dec, hide_index=True, width="stretch", height=320)
+        if dec.empty:
+            st.caption("No buys, sells or errors yet.")
+            return
+        # sized to its rows like the Positions table (no empty rows), up to the old 320px
+        st.dataframe(dec, hide_index=True, width="stretch", height=min(320, 38 + 35 * len(dec)))
 
 
 def backtest_tab() -> None:
