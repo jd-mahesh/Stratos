@@ -28,6 +28,13 @@ class PositionInfo:
     unrealized_pl: Optional[float] = None
 
 
+@dataclass
+class MarketClock:
+    is_open: bool
+    next_open: Optional[datetime]  # the next time the market opens (tomorrow's open while it's open)
+    next_close: Optional[datetime]  # the next time it closes (today's close while it's open)
+
+
 class DuplicateOrderError(Exception):
     """The broker already has an order with this client_order_id."""
 
@@ -47,6 +54,8 @@ class Broker(Protocol):
 
     def next_close(self) -> Optional[datetime]: ...
 
+    def clock(self) -> "MarketClock": ...
+
 
 def _f(value) -> Optional[float]:
     return None if value is None else float(value)
@@ -64,8 +73,16 @@ class AlpacaBroker:
 
     def next_close(self) -> Optional[datetime]:
         """When the market next closes (today's close while it's open; early closes included)."""
-        close = self._client.get_clock().next_close
-        return close if close is None or close.tzinfo else close.replace(tzinfo=timezone.utc)
+        return self.clock().next_close
+
+    def clock(self) -> MarketClock:
+        """Alpaca's market clock: open now?, next open, next close (holidays and early closes included)."""
+        c = self._client.get_clock()
+
+        def utc(t):
+            return t if t is None or t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+        return MarketClock(bool(c.is_open), utc(c.next_open), utc(c.next_close))
 
     def get_account(self) -> Account:
         a = self._client.get_account()

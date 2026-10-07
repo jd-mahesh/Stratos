@@ -55,6 +55,16 @@ streamlit run dashboard/app.py --server.port 8502  # open http://localhost:8502
 `--provider synthetic` generates random-walk prices so you can run everything offline.
 The dashboard flags those runs so they can't be mistaken for real results.
 
+**What the dashboard shows.** A status bar across the top: market open or closed (from the
+broker's clock, so holidays and early closes are right), when Stratos last ran (amber if it's
+been more than 15 minutes while the market is open, the same rule as the watchdog), crash mode,
+whether trading is active, halted or a dry run, and the next rebalance date. The **Paper account**
+tab has the balance chart and a **momentum ranking** of the whole stock list: each stock's
+lookback return, a 0–100 momentum meter (its percentile in the list), which ones are held, and the
+next five in line with how much more each would have to gain to overtake the weakest pick. The
+live trader saves the ranking once a day and at every rebalance, so you can look back at exactly
+why it bought what it did. The dashboard only reads the database; it never needs the trading keys.
+
 ## With real data
 
 1. Make a free account at [alpaca.markets](https://alpaca.markets), switch to the **Paper** account,

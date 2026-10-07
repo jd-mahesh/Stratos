@@ -11,6 +11,7 @@ Tables
     decisions          every live-trader decision, including "hold"
     equity_history     paper-account equity snapshot per live-trader tick
     positions          current paper positions (replaced every tick)
+    rankings           daily momentum ranking of the universe, for the dashboard
     bot_state          small key/value facts the live trader must remember,
                        e.g. which month a monthly strategy last rebalanced
 """
@@ -146,6 +147,24 @@ positions = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
+
+rankings = Table(
+    # The momentum ranking of the whole universe, saved once a day and at every rebalance
+    # (live_trader/ranking.py) so the dashboard can show why Stratos holds what it holds.
+    "rankings",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ts", DateTime(timezone=True), nullable=False, index=True),
+    Column("symbol", String(16), nullable=False),
+    Column("rank", Integer),  # 1 = strongest; NULL = can't be measured yet
+    Column("momentum", Float),  # the strategy's lookback return (0.25 = +25%)
+    Column("meter", Float),  # 0-100: percentile within the universe (100 = rank 1)
+    Column("category", String(16), nullable=False),  # top | next | ranked | negative | no_data
+    Column("held", Boolean, nullable=False, default=False),  # in the account when the snapshot was taken
+    Column("gap", Float),  # next-up names: how much more it must gain vs the last pick to overtake it
+    Column("note", Text),
+    Column("rebalance", Boolean, nullable=False, default=False),  # taken at a rebalance
+)
 
 bot_state = Table(
     "bot_state",

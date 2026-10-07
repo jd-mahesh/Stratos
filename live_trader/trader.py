@@ -55,7 +55,7 @@ from trader_core.config import Settings
 from trader_core.portfolio import Order, plan_buys, plan_sells, share_quantity  # noqa: F401 (re-exported)
 from trader_core.strategy import Strategy, make_strategy
 
-from . import status
+from . import ranking, status
 from .alerts import alert
 from .broker import Broker, DuplicateOrderError
 
@@ -102,6 +102,28 @@ def _next_month(today: date) -> str:
     return first.strftime("%B %Y")
 
 
+def record_dashboard_state(settings: Settings, broker: Broker, engine, now: datetime) -> None:
+    """Save what the dashboard's status bar needs: the market clock and the bot's non-secret settings.
+
+    The dashboard only reads the database, so it never needs the Alpaca keys.
+    """
+    clock = broker.clock()
+    db.set_state(engine, "dashboard:clock", json.dumps({
+        "checked_at": now.isoformat(), "is_open": clock.is_open,
+        "next_open": clock.next_open.isoformat() if clock.next_open else None,
+        "next_close": clock.next_close.isoformat() if clock.next_close else None,
+    }))
+    strategy = make_strategy(settings)
+    db.set_state(engine, "dashboard:settings", json.dumps({
+        "updated_at": now.isoformat(),
+        "strategy": strategy.name, "params": strategy.params(), "rebalance": strategy.rebalance,
+        "top": getattr(getattr(strategy, "normal", strategy), "top", None),
+        "symbols": len(settings.symbols), "signal_mode": settings.signal_mode,
+        "dry_run": settings.dry_run, "trading_halted": settings.trading_halted,
+        "crash_switch": bool(settings.crash_switch), "capital_reserve": settings.capital_reserve,
+    }, default=str))
+
+
 def _snapshot(engine, broker: Broker, now: datetime, reserve: float = 0.0) -> float:
     after = broker.get_account()
     db.insert_rows(engine, db.equity_history, [{
@@ -130,9 +152,22 @@ def run_tick(
     now: Optional[datetime] = None,
     scheduled_time: Optional[str] = None,
 ) -> Dict:
-    """One tick (see _tick), then any status emails it calls for (live_trader/status.py)."""
+    """One tick (see _tick), then the dashboard's records and any status emails it calls for.
+
+    Everything after the tick is best effort: it's logged if it fails and never
+    changes what was traded.
+    """
     now = now or datetime.now(timezone.utc)
     result = _tick(settings, broker, data, engine, now, scheduled_time)
+    try:
+        record_dashboard_state(settings, broker, engine, now)
+    except Exception:
+        log.exception("could not record the dashboard state")
+    try:
+        if ranking.maybe_snapshot(settings, broker, data, engine, result, now):
+            result["ranking_saved"] = True
+    except Exception:
+        log.exception("could not save the momentum ranking")
     try:
         sent = status.after_run(engine, settings, broker, result, now)
         if sent:

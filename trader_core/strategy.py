@@ -304,21 +304,31 @@ class Momentum(Strategy):
         return (f"{when}, hold the {self.top} symbols with the best {self._period()} return"
                 f"{rule}{scaling}{stop}{take}{dip}")
 
-    def decide(self, history: History, slots: Optional[int] = None, extra: Optional[History] = None,
-               mode: Optional[str] = None) -> Dict[str, Signal]:
-        returns = {}
-        out: Dict[str, Signal] = {}
+    def returns(self, history: History) -> Tuple[Dict[str, float], Dict[str, str]]:
+        """Each symbol's momentum return, plus the reason for any that can't be measured yet.
+
+        Shared by ``decide`` and the dashboard's ranking (live_trader/ranking.py), so
+        the ranking you see is exactly the one the strategy trades on.
+        """
+        returns: Dict[str, float] = {}
+        missing: Dict[str, str] = {}
         for symbol, closes in history.items():
             arr = np.asarray(closes, dtype=float)
             if arr.size < self.required_bars:
-                out[symbol] = Signal(None, f"need {self.required_bars} days of prices")
+                missing[symbol] = f"need {self.required_bars} days of prices"
                 continue
             # return from `lookback` days ago up to `skip` days ago (skip 0 = up to the latest price)
             end, begin = arr[-1 - self.skip], arr[-1 - self.lookback]
             if not (np.isfinite(arr[-1]) and np.isfinite(end) and np.isfinite(begin)):
-                out[symbol] = Signal(None, f"need {self.required_bars} days of prices")
+                missing[symbol] = f"need {self.required_bars} days of prices"
                 continue
             returns[symbol] = float(end / begin - 1)
+        return returns, missing
+
+    def decide(self, history: History, slots: Optional[int] = None, extra: Optional[History] = None,
+               mode: Optional[str] = None) -> Dict[str, Signal]:
+        returns, missing = self.returns(history)
+        out: Dict[str, Signal] = {s: Signal(None, why) for s, why in missing.items()}
 
         ranked = sorted(returns, key=returns.get, reverse=True)
         picks = [s for s in ranked[: self.top] if not (self.absolute and returns[s] <= 0)]
