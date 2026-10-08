@@ -39,7 +39,8 @@ def test_online_once_per_trading_day(engine, mail):
     run_tick(settings(), broker, VolData(), engine, now=NOW + timedelta(minutes=5))
     assert subjects(mail).count("Stratos is online") == 1
     body = dict(mail)["Stratos is online"]
-    assert "Account value" in body and "Next scheduled rebalance: first trading day of July 2024" in body
+    assert "Account Value: $100,000.00" in body and "Next scheduled rebalance: first trading day of July 2024" in body
+    assert "Earned Overnight" not in body  # no earlier run to compare with
     run_tick(settings(), broker, VolData(), engine, now=NOW + timedelta(days=1))  # next day: online again
     assert subjects(mail).count("Stratos is online") == 2
 
@@ -92,7 +93,25 @@ def test_offline_reports_the_trading_budget_with_a_reserve(engine, mail):
     run_tick(settings(CAPITAL_RESERVE="90000"), FakeBroker(close=close), VolData(), engine,
              now=close - timedelta(minutes=4))
     body = dict(mail)["Stratos is offline for the day"]
-    assert "Trading budget (account $100,000.00 minus the $90,000.00 reserve): $10,000.00" in body
+    assert "Trading Budget: $10,000.00" in body and "reserve" not in body
+    assert "Earned Today: +$0.00 (+0.00%)" in body  # its only run today is this one
+
+
+def test_earned_overnight_and_today_add_up_to_the_whole_day(engine, mail):
+    s = settings(CAPITAL_RESERVE="90000")
+    close = NOW.replace(hour=20, minute=0)
+    db.insert_rows(engine, db.equity_history, [  # yesterday's last run: a $9,800 budget
+        {"ts": close - timedelta(days=1, minutes=4), "equity": 99_800.0, "cash": 0.0, "buying_power": 0.0,
+         "reserve": 90_000.0}])
+    broker = FakeBroker(close=close)  # $100,000 this morning: a $10,000 budget
+    run_tick(s, broker, VolData(), engine, now=NOW)
+    online = dict(mail)["Stratos is online"]
+    assert "Trading Budget: $10,000.00\nEarned Overnight: +$200.00 (+2.04%)\n" in online
+    broker.equity = 99_500.0  # down $500 by the last run
+    run_tick(s, broker, VolData(), engine, now=close - timedelta(minutes=4))
+    offline = dict(mail)["Stratos is offline for the day"]
+    assert "Trading Budget: $9,500.00\nEarned Today: -$500.00 (-5.00%)\n" in offline
+    assert "Earned Overnight" not in offline and "Earned Today" not in online
 
 
 def test_no_status_emails_when_off_in_dry_runs_or_when_closed(engine, mail):

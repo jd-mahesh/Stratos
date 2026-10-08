@@ -227,7 +227,7 @@ def ranking_status(row) -> str:
 def ranking_section() -> None:
     snaps = query("SELECT ts, MAX(CASE WHEN rebalance THEN 1 ELSE 0 END) AS rebalance FROM rankings "
                   "GROUP BY ts ORDER BY ts DESC LIMIT 90")
-    st.subheader("Momentum ranking")
+    st.subheader("Momentum ranking", anchor=False)
     if snaps.empty:
         st.caption("No ranking saved yet. Stratos saves one each trading day on its last run, and at every rebalance.")
         return
@@ -322,7 +322,7 @@ def paper_tab() -> None:
         else:
             st.success("Normal mode: the crash detector sees normal market conditions.")
 
-    st.subheader("Trading budget" if reserve > 0 else "Equity")
+    st.subheader("Trading budget" if reserve > 0 else "Equity", anchor=False)
     st.line_chart(equity.set_index("ts")[["value"]].rename(columns={"value": "budget" if reserve > 0 else "equity"}),
                   height=280)
 
@@ -330,7 +330,8 @@ def paper_tab() -> None:
 
     left, right = st.columns([2, 3])
     with left:
-        st.subheader("Positions")
+        # laid out like the Decisions heading row, so the two tables start at the same height
+        st.container(horizontal=True, vertical_alignment="center").subheader("Positions", anchor=False, width="content")
         pos = query("SELECT symbol, qty, avg_entry_price, market_value, unrealized_pl FROM positions ORDER BY symbol")
         if pos.empty:
             st.caption("All cash.")
@@ -341,13 +342,13 @@ def paper_tab() -> None:
             "SELECT ts, symbol, action, order_qty, price, fast_ma, slow_ma, reason, dry_run "
             "FROM decisions ORDER BY ts DESC LIMIT 500"
         )
-        # the toggle sits on the heading's line, so this table starts level with the Positions table
-        head, toggle = st.columns([3, 2], vertical_alignment="bottom")
-        head.subheader("Decisions")
+        # the toggle sits just after the heading, so this table starts level with the Positions table
+        row = st.container(horizontal=True, vertical_alignment="center", gap="medium")
+        row.subheader("Decisions", anchor=False, width="content")
         if dec.empty:
             st.caption("No decisions yet.")
             return
-        with toggle:
+        with row:
             only_trades = st.toggle("Only buys, sells and errors", value=True)
         dec["ts"] = pd.to_datetime(dec["ts"], utc=True).dt.tz_convert("America/New_York")
         if only_trades:
@@ -424,10 +425,10 @@ def backtest_tab() -> None:
     lines = curve.set_index("ts").rename(columns={"equity": "strategy", "benchmark_equity": "buy & hold",
                                                   "matched_equity": "same exposure"})
     lines = lines[[c for c in ("strategy", "buy & hold", "same exposure") if c in lines and lines[c].notna().any()]]
-    st.subheader("Growth of the account")
+    st.subheader("Growth of the account", anchor=False)
     st.line_chart(lines, height=300)
 
-    st.subheader("By year")
+    st.subheader("By year", anchor=False)
     yearly = []
     for year, chunk in lines.groupby(lines.index.year):
         before = lines[lines.index < chunk.index[0]]
@@ -440,7 +441,7 @@ def backtest_tab() -> None:
         column_config={c: st.column_config.NumberColumn(c, format="percent") for c in lines.columns},
     )
 
-    st.subheader("Trades")
+    st.subheader("Trades", anchor=False)
     trades = query("SELECT symbol, entry_ts, entry_price, exit_ts, exit_price, qty, pnl, return_pct "
                    "FROM backtest_trades WHERE run_id = :run_id ORDER BY entry_ts", run_id=run_id)
     money_col = st.column_config.NumberColumn(format="dollar")
@@ -466,7 +467,7 @@ def backtest_tab() -> None:
 
 
 if check_password():
-    st.title("Stratos")
+    st.title("Stratos", anchor=False)
     status_bar()
     paper, backtests = st.tabs(["Paper account", "Backtests"])
     with paper:

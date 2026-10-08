@@ -2,9 +2,13 @@
 
 With STATUS_EMAILS on (and an alert topic set), each trading day you get:
 
-    Stratos is online             first run after the open: budget, holdings, next rebalance
+    Stratos is online             first run after the open: budget, earned overnight, holdings, next rebalance
     Stratos bought ... / sold ... any run that places orders: one email per side, per run
     Stratos is offline for the day  the end of the last run before the close: the day's summary
+
+"Earned Overnight" compares the day's first run with the previous trading day's last
+run; "Earned Today" compares the day's last run with its first. Together they make
+up the whole change since the previous trading day.
 
 "Offline for the day" is sent by the last run itself, as its final step, so it
 arrives when Stratos stops. The broker's clock says when today's market closes,
@@ -52,8 +56,8 @@ def _value(equity: float, settings) -> Tuple[float, str]:
     """The money Stratos trades (budget when there's a reserve) and what to call it."""
     reserve = float(getattr(settings, "capital_reserve", 0.0) or 0.0)
     if reserve > 0:
-        return equity - reserve, f"Trading budget (account {_money(equity)} minus the {_money(reserve)} reserve)"
-    return equity, "Account value"
+        return equity - reserve, "Trading Budget"
+    return equity, "Account Value"
 
 
 def _holdings(engine) -> List[str]:
@@ -63,22 +67,43 @@ def _holdings(engine) -> List[str]:
     return [f"  {s}: {q:g} shares" + (f", {_money(v)}" if v is not None else "") for s, q, v in rows if q]
 
 
-def _since_yesterday(engine, value_now: float, settings, now: datetime) -> Optional[float]:
-    """Change in the traded value since the last snapshot before today (same reserve), or None."""
+def _history(engine, settings) -> pd.DataFrame:
+    """Snapshots taken with the current reserve: ts, day (New York), value (equity minus reserve)."""
     t = db.equity_history.c
     with engine.connect() as conn:
         rows = conn.execute(select(t.ts, t.equity, t.reserve)).fetchall()
-    if not rows:
-        return None
     h = pd.DataFrame(rows, columns=["ts", "equity", "reserve"])
+    if h.empty:
+        return h.assign(day=[], value=[])
     h["reserve"] = pd.to_numeric(h["reserve"]).fillna(0.0)
     reserve = float(getattr(settings, "capital_reserve", 0.0) or 0.0)
-    h = h[(h["reserve"] - reserve).abs() < 0.005]
-    h["day"] = pd.to_datetime(h["ts"], utc=True).dt.tz_convert(NY).dt.date
-    earlier = h[h["day"] < now.astimezone(NY).date()].sort_values("ts")
-    if earlier.empty:
-        return None
-    return value_now - float(earlier["equity"].iloc[-1] - earlier["reserve"].iloc[-1])
+    h = h[(h["reserve"] - reserve).abs() < 0.005].copy()
+    h["ts"] = pd.to_datetime(h["ts"], utc=True)
+    h["day"] = h["ts"].dt.tz_convert(NY).dt.date
+    h["value"] = h["equity"] - h["reserve"]
+    return h.sort_values("ts")
+
+
+def _overnight(engine, value_now: float, settings, now: datetime) -> Optional[float]:
+    """Change since the previous trading day's last run (same reserve), or None if there isn't one."""
+    h = _history(engine, settings)
+    earlier = h[h["day"] < now.astimezone(NY).date()]
+    return None if earlier.empty else value_now - float(earlier["value"].iloc[-1])
+
+
+def _today(engine, value_now: float, settings, now: datetime) -> Optional[float]:
+    """Change since today's first run (same reserve), or None if there isn't one."""
+    h = _history(engine, settings)
+    today = h[h["day"] == now.astimezone(NY).date()]
+    return None if today.empty else value_now - float(today["value"].iloc[0])
+
+
+def _earned(label: str, change: Optional[float], value_now: float) -> List[str]:
+    """'Earned ...: +$12.34 (+0.25%)', or nothing when there's no earlier run to compare with."""
+    start = None if change is None else value_now - change
+    if not start:
+        return []
+    return [f"{label}: {'+' if change >= 0 else ''}{_money(change)} ({change / start * 100:+.2f}%)"]
 
 
 def _start_of_day(now: datetime) -> datetime:
@@ -145,7 +170,8 @@ def after_run(engine, settings, broker, result: Dict, now: datetime) -> List[str
             sent.append(subject)
 
     # 1. Online: the first run of the trading day
-    body = [f"Stratos is running for {day:%A, %B %d}.", "", f"{label}: {_money(value)}", "",
+    body = [f"Stratos is running for {day:%A, %B %d}.", "", f"{label}: {_money(value)}",
+            *_earned("Earned Overnight", _overnight(engine, value, settings, now), value), "",
             "Holding:" if holdings else "Holding: nothing (all cash)", *holdings, "",
             f"Next scheduled rebalance: first trading day of {_next_month(day)}."]
     if halted:
@@ -163,14 +189,10 @@ def after_run(engine, settings, broker, result: Dict, now: datetime) -> List[str
 
     # 3. Offline: the end of the last run before the close
     if is_last_run(broker, now):
-        change = _since_yesterday(engine, value, settings, now)
         trades = _trades_today(engine, now)
         problems = _problems_today(engine, now)
         body = [f"Stratos has finished for {day:%A, %B %d} and is offline until the next trading day's open.", "",
-                f"{label}: {_money(value)}"]
-        if change is not None and value - change:
-            body.append(f"Today: {'+' if change >= 0 else ''}{_money(change)} "
-                        f"({change / (value - change) * 100:+.2f}%)")
+                f"{label}: {_money(value)}", *_earned("Earned Today", _today(engine, value, settings, now), value)]
         body += ["", "Trades today:" if trades else "Trades today: none", *trades, "",
                  "Problems today:" if problems else "Problems today: none", *problems, "",
                  "Holding:" if holdings else "Holding: nothing (all cash)", *holdings, "",
