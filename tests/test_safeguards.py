@@ -5,7 +5,9 @@ import runpy
 import sys
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
 import pandas as pd
+from sqlalchemy import select
 import pytest
 
 from live_trader import alerts
@@ -357,3 +359,70 @@ def test_lambda_test_alert_reports_problems_instead_of_crashing(monkeypatch):
     monkeypatch.setattr(alerts, "_publish", denied)
     out = lambda_handler.handler({"test_alert": True}, None)
     assert out["status"] == "alert_failed" and "not authorized" in out["error"]
+
+
+# --- retrying an unfinished monthly rebalance ------------------------------------
+
+class TwinData(VolData):
+    """UP and UP2 have identical histories, so the live price alone decides which ranks first.
+
+    STALE's daily bars stopped a month ago, so it fails the price check on every run.
+    """
+
+    def __init__(self, leader="UP"):
+        super().__init__()
+        self.bars["UP2"] = self.bars["UP"].copy()
+        self.bars["STALE"] = self.bars["UP"].iloc[:-21].copy()
+        self.leader = leader
+
+    def latest_prices(self, symbols):
+        live = super().latest_prices(symbols)
+        for s in ("UP", "UP2"):
+            if s in live:
+                live[s] *= 1.01 if s == self.leader else 0.99
+        return live
+
+
+def twins(**extra):
+    env = {"SYMBOLS": "UP,UP2,STALE", "STRATEGY": "momentum", "MOMENTUM_LOOKBACK": "126", "MOMENTUM_TOP": "1",
+           "SIGNAL_MODE": "intraday", "MAX_ORDER_PCT": "100", "MAX_POSITION_PCT": "100"}
+    env.update(extra)
+    return Settings.from_env(env)
+
+
+def test_retries_of_an_unfinished_rebalance_do_not_churn(engine):
+    """A symbol that keeps failing the price check holds the month open; the retries must not re-rank
+    on every new live price, or the bot flips between near-tied stocks every five minutes."""
+    s = twins()
+    first = FakeBroker()
+    run_tick(s, first, TwinData(leader="UP"), engine, now=NOW)
+    assert [(o[0], o[2]) for o in first.orders] == [("UP", "buy")]
+    assert db.get_state(engine, rebalance_key(make_strategy(s))) is None  # STALE holds the month open
+
+    qty = first.orders[0][1]
+    for minutes, leader in ((5, "UP2"), (10, "UP"), (15, "UP2")):  # the live leader keeps changing
+        broker = FakeBroker(positions={"UP": qty}, cash=100_000 - qty * 100)
+        result = run_tick(s, broker, TwinData(leader=leader), engine, now=NOW + timedelta(minutes=minutes))
+        assert broker.orders == [], f"retry {minutes} min later traded: {broker.orders}"
+        assert {d["symbol"]: d["action"] for d in result["decisions"]}["UP"] == "hold"
+
+    # the next day a symbol that's still bad no longer holds the month open
+    broker = FakeBroker(positions={"UP": qty}, cash=0)
+    run_tick(s, broker, TwinData(leader="UP2"), engine, now=NOW + timedelta(days=1))
+    assert broker.orders == []
+    assert db.get_state(engine, rebalance_key(make_strategy(s))) == "2024-06"
+
+
+def test_a_rebalance_finished_on_a_retry_saves_the_ranking_it_traded_on(engine):
+    s = twins()
+    run_tick(s, FakeBroker(), TwinData(leader="UP"), engine, now=NOW)  # starts the rebalance: UP ranks first
+    # the next day STALE no longer holds the month open, so this retry finishes the rebalance,
+    # even though UP2 leads on live prices now
+    result = run_tick(s, FakeBroker(positions={"UP": 1}, cash=0), TwinData(leader="UP2"), engine,
+                      now=NOW + timedelta(days=1))
+    assert result["rebalanced"] and result.get("ranking_saved")
+    r = db.rankings.c
+    with engine.connect() as conn:
+        rows = conn.execute(select(r.symbol, r.rank).where(r.rebalance.is_(True)).order_by(r.ts)).fetchall()
+    first_of_last = [sym for sym, rank in rows[-3:] if rank == 1]
+    assert first_of_last == ["UP"]

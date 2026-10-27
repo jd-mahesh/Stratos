@@ -13,6 +13,10 @@ return calculation (Momentum.returns) and saves it to the ``rankings`` table:
     gap              for "next" names: how much more the stock must gain, relative
                      to the weakest pick, to overtake it at the next rebalance
 
+A rebalance snapshot ranks with the same prices the rebalance traded on: when a
+rebalance finishes on a retry, that's the prices its first run saw (see
+live_trader/trader.py), not the live prices at the moment it finished.
+
 The dashboard only reads the database, so it never needs the trading keys.
 A failure here is logged and never affects trading.
 """
@@ -20,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -96,24 +100,34 @@ def has_snapshot(engine, since: Optional[datetime] = None, daily_only: bool = Fa
 
 def snapshot(settings, data, engine, now: datetime, rebalance: bool = False) -> int:
     """Rank the universe now and save it. Returns the number of rows saved (0 if not momentum)."""
-    from .trader import closes_for_signal  # imported here: trader imports this module
+    from .trader import closes_for_signal, load_plan, plan_key  # imported here: trader imports this module
 
     strategy = momentum_strategy(settings)
     if strategy is None:
         return 0
     symbols = settings.symbols
     today = now.astimezone(NY).date()
-    bars = data.daily_bars(symbols, today - timedelta(days=math.ceil(strategy.warmup_bars * 1.6) + 15), today)
+    as_of, frozen = today, {}
+    if rebalance:  # rank on what the rebalance traded on (its first run's prices, if it was retried)
+        plan = load_plan(engine, plan_key(make_strategy(settings), safeguards.reserve_of(settings)),
+                         today.strftime("%Y-%m"))
+        if plan is not None:
+            as_of, frozen = date.fromisoformat(plan["day"]), plan["prices"]
+    start = min(as_of, today) - timedelta(days=math.ceil(strategy.warmup_bars * 1.6) + 15)
+    bars = data.daily_bars(symbols, start, today)
     prices = data.latest_prices(symbols)
-    history = {}
+    history, unsafe = {}, {}
     for s in symbols:
         if s not in bars:
             continue
         price = prices.get(s)
-        if safeguards.check_price(bars.get(s), price, today, settings) is not None:
-            price = None  # suspicious live price: rank on completed closes only, like the trader does
-        history[s] = closes_for_signal(bars[s], today, price, settings.signal_mode)
+        problem = safeguards.check_price(bars.get(s), price, today, settings)
+        if problem is not None:  # the trader leaves these out of its ranking, so the snapshot does too
+            unsafe[s] = f"left out this run: {problem}"
+            continue
+        history[s] = closes_for_signal(bars[s], as_of, frozen.get(s, price), settings.signal_mode)
     returns, missing = strategy.returns(history)
+    missing.update(unsafe)
     for s in symbols:
         if s not in history:
             missing.setdefault(s, "no market data")

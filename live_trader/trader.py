@@ -26,6 +26,15 @@ Sizing and order planning use trader_core/portfolio.py, the same code as the
 backtest: target weight x account value, sells first, never more than the cash
 on hand (no margin), fractional shares where the asset allows.
 
+Unfinished rebalances: a monthly rebalance that couldn't finish (a symbol's price
+failed the sanity check, or an order failed) is retried on the next runs. The
+retries rank with the prices the month's first rebalance run saw (saved in
+bot_state), not with each new live price, so they finish that one rebalance
+instead of re-deciding it every five minutes. Without that, two near-tied stocks
+could swap places on every tick and the bot would trade back and forth all day.
+A symbol whose prices still look wrong only holds the month open for the rest of
+that day; after that it waits for next month. Failed orders keep it open.
+
 Safeguards (trader_core/safeguards.py) wrap every run: a kill switch, a loss
 circuit breaker that halts until someone resumes it, price sanity checks, and
 order limits checked before anything is sent. Problems raise alerts
@@ -40,6 +49,7 @@ changing the reserve rebalances on the next run.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import math
@@ -95,6 +105,28 @@ def rebalance_key(strategy: Strategy, reserve: float = 0.0) -> str:
     CAPITAL_RESERVE starts fresh (so the change is traded on the next run)."""
     key = f"last_rebalance:{strategy.name}:{json.dumps(strategy.params(), sort_keys=True)}"
     return f"{key}:reserve={reserve:.2f}" if reserve > 0 else key
+
+
+def plan_key(strategy: Strategy, reserve: float = 0.0) -> str:
+    """bot_state key for the inputs of this month's rebalance (see "Unfinished rebalances" above)."""
+    return f"plan:{rebalance_key(strategy, reserve)}"
+
+
+def load_plan(engine, plan_key: str, month: str) -> Optional[Dict]:
+    """This month's saved rebalance inputs ({"month", "mode", "day", "prices"}), or None."""
+    raw = db.get_state(engine, plan_key)
+    if not raw:
+        return None
+    try:
+        plan = json.loads(raw)
+        if plan.get("month") != month:
+            return None
+        date.fromisoformat(plan["day"])
+        if not isinstance(plan.get("prices"), dict):
+            return None
+    except (ValueError, KeyError, TypeError, AttributeError):  # unreadable: decide afresh
+        return None
+    return plan
 
 
 def _next_month(today: date) -> str:
@@ -243,9 +275,14 @@ def _tick(
     if done_this_month and not has_modes:
         return not_due(f"{strategy.name} rebalances monthly; done for {month}, next in {_next_month(today)}")
 
+    # A monthly rebalance that's still unfinished is retried with the inputs its first run saw.
+    saved_plan = plan_key(strategy, reserve)
+    plan = load_plan(engine, saved_plan, month) if strategy.rebalance == "monthly" else None
+    plan_day = date.fromisoformat(plan["day"]) if plan else today
+
     lookback_days = math.ceil(strategy.warmup_bars * 1.6) + 15
     extras = [s for s in strategy.extra_symbols if s not in symbols]
-    bars = data.daily_bars(symbols + extras, today - timedelta(days=lookback_days), today)
+    bars = data.daily_bars(symbols + extras, min(plan_day, today) - timedelta(days=lookback_days), today)
     prices = data.latest_prices(symbols + extras)
 
     def trusted_price(symbol: str) -> Optional[float]:
@@ -281,6 +318,20 @@ def _tick(
                        f"{why}", mode)
     if mode_changed:
         log.info("market mode changed from %s to %s: %s", previous_mode, mode, regime.reason)
+
+    if plan is not None and plan.get("mode") != mode:  # a change of mode is a new rebalance
+        plan, plan_day = None, today
+    frozen: Dict[str, float] = dict(plan["prices"]) if plan else {}
+    signal_prices: Dict[str, float] = {}  # the live price each symbol was ranked with this run
+
+    def signal_closes(symbol: str, live: Optional[float]) -> np.ndarray:
+        """History for the strategy: as of the rebalance's first run if retrying, else as of now."""
+        price = frozen.get(symbol, live)
+        if price is not None:
+            signal_prices[symbol] = price
+        return closes_for_signal(bars[symbol], plan_day, price, settings.signal_mode)
+
+    decide_extra = {s: signal_closes(s, trusted_price(s)) for s in strategy.extra_symbols if s in bars}
 
     account = broker.get_account()
     positions = broker.get_positions()
@@ -322,14 +373,22 @@ def _tick(
                 rows[symbol]["reason"] = f"safety: skipped this run, {problem}"
                 continue
         if symbol in symbols and symbol in bars and prices.get(symbol):
-            history[symbol] = closes_for_signal(bars[symbol], today, prices[symbol], settings.signal_mode)
+            history[symbol] = signal_closes(symbol, prices[symbol])
     if unsafe:
         alert(engine, settings, "price-check",
               "Skipped for suspicious price data (will retry next run): "
               + "; ".join(f"{s}: {why}" for s, why in sorted(unsafe.items())), now)
 
     # Every symbol with data is ranked/evaluated, even ones we can't act on right now.
-    signals = strategy.decide(history, len(symbols), extra_history, mode)
+    signals = strategy.decide(history, len(symbols), decide_extra, mode)
+    if plan is not None:
+        note = f"; finishing the rebalance started {plan_day.isoformat()}, with the prices it was ranked on"
+        signals = {s: dataclasses.replace(sig, reason=sig.reason + note) for s, sig in signals.items()}
+    if strategy.rebalance == "monthly" and not settings.dry_run:
+        saved = {**signal_prices, **frozen}  # symbols first seen on a retry are frozen from now on
+        if plan is None or saved != frozen:
+            db.set_state(engine, saved_plan, json.dumps(
+                {"month": month, "mode": mode, "day": plan_day.isoformat(), "prices": saved}))
     actionable = {}
     for symbol, sig in signals.items():
         if symbol not in rows or symbol in unsafe or not prices.get(symbol):
@@ -436,7 +495,9 @@ def _tick(
     for order in buys:
         send(order)
 
-    if not settings.dry_run and not errors and not unsafe:
+    # Bad prices hold the rebalance open (retried next run) only on the day it started.
+    unfinished = errors or (unsafe and plan_day == today)
+    if not settings.dry_run and not unfinished:
         if strategy.rebalance == "monthly":
             db.set_state(engine, key, month)
         if has_modes and mode is not None:

@@ -15,15 +15,19 @@ setting for real money. Nothing here is investment advice.
 ## How it fits together
 
 ```
-strategy.py ──imported by──> backtester image ──┐
-            └─imported by──> live-trader image ─┼─docker push─> ECR
-                             dashboard image ───┘
+strategy.py ──imported by──> backtester image ───┐
+            └─imported by──> live-trader image ──┼─docker push─> ECR ──> Lambda
+                             dashboard image ────┘  (built; runs on a laptop for now)
 
-historical bars ──> backtester (Lambda, on demand) ──backtest_* tables──┐
-EventBridge (every 5 min, market hours) ──> live-trader (Lambda) ─────┼──> Postgres (RDS)
-     Secrets Manager ──keys──┘      │  ▲                              │
-                                    ▼  │ poll prices / submit orders   ▼
-                                   Alpaca paper API          dashboard (ECS Express Mode)
+EventBridge Scheduler (weekdays, New York time)
+  every 5 min, 9:00–3:55 ──────> live-trader (Lambda) <──keys── Secrets Manager
+  every 15 min (watchdog) ─────┘     │     ▲
+                                     │     └── prices / orders ──> Alpaca paper API
+                                     ├──> Postgres (RDS) ──read only──> dashboard (Streamlit)
+                                     └──> SNS ──> status and alert emails
+
+historical bars ──> backtester (on demand) ──> backtest_* tables in the same database
+Lambda errors ──> CloudWatch alarm ──> SNS ──> email
 ```
 
 | Folder | What it is |
@@ -36,7 +40,34 @@ EventBridge (every 5 min, market hours) ──> live-trader (Lambda) ───�
 | `tests/` | pytest suite (no network or API keys needed) |
 | `docs/DEPLOY.md` | Step-by-step AWS deployment with the CLI |
 | `scripts/check_symbols.py` | Checks every ticker in `SYMBOLS` against Alpaca: tradable, fractional, how much price history |
-| `ci/ci.yml` | GitHub Actions workflow (tests against Postgres, builds all three images). Move it to `.github/workflows/ci.yml` when you put the repo on GitHub |
+| `scripts/push_images.sh` | Deploys: builds the images, pushes them to ECR and points the Lambda functions at the new version |
+| `scripts/dashboard.sh` | Starts the dashboard locally against the cloud database |
+| `.github/workflows/ci.yml` | GitHub Actions: runs the tests against Postgres and builds all three images on every push |
+
+## What runs live
+
+The live trader on AWS runs the momentum strategy with these settings. They live in the
+Lambda's configuration, not in the repo; the defaults in `.env.example` are a safe starting
+point, not the live values.
+
+| Setting | Live value | What it means |
+|---|---|---|
+| `STRATEGY` | `momentum` | Hold the stocks with the strongest recent return |
+| `MOMENTUM_LOOKBACK` | `126` | Rank by 6-month return (126 trading days) |
+| `MOMENTUM_TOP` | `5` | Hold the top 5, each sized at 1/5 of the budget |
+| `MOMENTUM_VOL_SCALE` | `21` | Invest less when the picks' last month was unusually volatile |
+| `SIGNAL_MODE` | `intraday` | Rank with the live price, not just yesterday's close |
+| `FRACTIONAL_SHARES` | `true` | Buy fractional shares so every slot is fully spent |
+| `CRASH_SWITCH` | `false` | Crash mode off |
+| `CAPITAL_RESERVE` | `100000` | Trade only what's above $100,000, like a small account |
+| `STATUS_EMAILS` | `true` | Email when it starts, trades and stops each day |
+| `DRY_RUN` | `false` | Send real orders to the paper account |
+
+It runs every 5 minutes from 9:00 to 3:55 New York time on weekdays, does nothing while the
+market is closed, and rebalances on the first trading day of each month (turnover is low:
+most positions are held for months). The trailing stop, take-profit and
+buy-the-dip ideas were all backtested and rejected; see the experiments under
+[Strategies](#strategies).
 
 ## Quick start (no API keys needed)
 
@@ -47,7 +78,7 @@ You need Python 3.11+ (macOS's built-in 3.9 is too old for current libraries;
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements/dev.txt
 
-pytest -q                                      # runs in about a second, no network needed
+pytest -q                                      # runs in a few seconds, no network needed
 python -m backtester --provider synthetic      # backtest on fake prices, saved to trading.db
 streamlit run dashboard/app.py --server.port 8502  # open http://localhost:8502
 ```
@@ -63,7 +94,10 @@ tab has the balance chart and a **momentum ranking** of the whole stock list: ea
 lookback return, a 0–100 momentum meter (its percentile in the list), which ones are held, and the
 next five in line with how much more each would have to gain to overtake the weakest pick. The
 live trader saves the ranking once a day and at every rebalance, so you can look back at exactly
-why it bought what it did. The dashboard only reads the database; it never needs the trading keys.
+why it bought what it did. Below it are the current **Positions** and the recent **Decisions**
+(buys, sells and errors by default; a toggle shows every run). The **Backtests** tab shows each
+saved backtest: growth of the account, a year-by-year table and every trade. The dashboard only
+reads the database; it never needs the trading keys.
 
 ## With real data
 
@@ -362,7 +396,7 @@ a small-account backtest, use `INITIAL_CAPITAL`.
 
 Every backtest prints three columns:
 
-- **Strategy**: what the crossover rule did.
+- **Strategy**: what the chosen strategy did.
 - **Buy & hold**: buying every symbol on day one and never trading.
 - **Same exposure**: buy & hold scaled down to the strategy's *average* amount invested
   (say 60%), with the rest in cash.
@@ -402,11 +436,18 @@ symbols with unfilled orders are skipped, and each order's `client_order_id` is 
 from the scheduled run time so a retried Lambda invocation is rejected by Alpaca
 instead of trading twice.
 
+**A rebalance is decided once.** If a monthly rebalance can't finish (a symbol fails the
+price check, or an order fails), the next runs retry it, but they rank with the prices the
+first attempt saw, so they only finish that rebalance instead of re-deciding it. Otherwise,
+in `intraday` mode, two near-tied stocks could swap places on every five-minute tick and the
+bot would trade back and forth all day. A symbol whose prices still look wrong only holds the
+month open for the rest of that day; failed orders keep it open until they go through.
+
 **Backtest and live are meant to agree.** Both modes are simulated by the backtester,
 and both programs use the same strategy code and the same order planner.
 
 **Sizing.** Each position's target is a fraction of the account (1/number of symbols for
-`ma_crossover` and `trend`, 1/3 for `momentum`). With `FRACTIONAL_SHARES=true` (the
+`ma_crossover` and `trend`, 1/`MOMENTUM_TOP` for `momentum`, so 1/5 live). With `FRACTIONAL_SHARES=true` (the
 default) buys spend their whole target, even on a $1,000 stock with a $1,900 slot. The bot
 only spends the account's actual cash, never Alpaca's margin "buying power", so it can't
 borrow. Symbols don't need matching histories: a recent listing waits until it has enough
@@ -420,5 +461,6 @@ chosen without hindsight, over more than one market regime.
 
 - Deploy from GitHub Actions on merge to `main` (OIDC role instead of stored AWS keys)
 - Describe the AWS resources in Terraform or AWS CDK instead of CLI commands
-- A parameter sweep (run the backtester Lambda for many window pairs in parallel)
+- Run `--sweep` on the backtester Lambda, many settings in parallel, instead of one after another on a laptop
+- Host the dashboard on AWS (ECS) once the strategy is settled
 - Volatility-based sizing (smaller positions in more volatile symbols)
